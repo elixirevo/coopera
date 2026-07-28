@@ -1,0 +1,17 @@
+[package]
+name = "coopera-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+toml.workspace = true
+regex.workspace = true
+jiff.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
