@@ -33,15 +33,15 @@ echo '{}' | cargo run -p coopera-cli -- hook session-start
 
 - [x] F1 `coopera init`: wiki/·.coopera/ 스캐폴드, .claude/settings.json 훅 병합(멱등), CLAUDE.md/AGENTS.md 마커 블록, 비-git 에러 — 스모크 테스트 통과
 - [x] F2 세션 시작 주입: 훅 JSON I/O, 예산 상한(기본 1500), anchor 랭킹, systemMessage 가시화, fail-open — 스모크 테스트 통과 (**워킹 슬라이스**)
-- [ ] F3 세션 종료 증류: 훅→백그라운드 spawn까지 구현됨. **증류기 본체 미구현** — `claude -p` 호출→Digest 스키마 파싱→wiki/sessions/ 기록→위키 diff 스테이징→레드액션 (TODO(F3) 주석 위치: crates/coopera-cli/src/cmd_distill.rs)
-- [ ] F3 후속: 유사 페이지 수정 우선, 실패 시 undistilled 마커(마커 자체는 구현됨)
+- [x] F3 세션 종료 증류 — **구현 완료** (2026-07-29): 에이전트 headless 호출(설정 가능, 기본 `claude -p`, 프롬프트는 stdin)→고정 스키마 JSON 파싱→다이제스트(wiki/sessions/)→위키 초안 create/update(린트 게이트+레드액션+wiki/ 경로 탈출 차단)→스테이징(코드 PR 동승)→성공 시 retro 큐 해제. 재귀 가드 COOPERA_DISTILL. 스텁 e2e + **실 `claude -p` 검증 완료**(결정 2·학습 1·고품질 초안 생성 확인)
+- [x] F3 후속: 유사 페이지 update 우선(프롬프트 지시+update 액션), 실패 시 undistilled 마커·`--retro`로 소급 처리
 - [x] F4 위키 린트: 스키마 검증, 위반 시 비0 종료 — 스모크 테스트 통과
 - [ ] stale 페이지 주입 제외 — last_verified 비교 로직 미구현(현재 draft 감점만)
 
 ### 구현 중 검증 항목 (PRD 미해결)
 
-- [ ] 증류 품질 — F3 완성 후 실세션 1회 → 사용자가 위키 diff 직접 리뷰 (첫 판정)
-- [ ] Claude Code SessionEnd 훅의 transcript_path 실제 형식 확인
+- [ ] **증류 품질 실전 판정** — 이 리포에 `coopera init` 실행(self-hosting 시작) → 실개발 세션 1회 → 생성된 위키 diff를 사용자가 직접 리뷰 = M1 완성 기준
+- [x] Claude Code SessionEnd 훅의 transcript_path 실제 형식 — 확인 완료(`~/.claude/projects/<경로-슬러그>/<session-id>.jsonl`, user content는 문자열/블록 배열 혼재, assistant는 thinking/text/tool_use)
 - [ ] (M2) Codex PreToolUse가 apply_patch에도 발화하는지
 
 ## 컨벤션

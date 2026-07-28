@@ -10,6 +10,11 @@ use coopera_core::wiki;
 use std::io::Read;
 use std::path::PathBuf;
 
+/// Set on agent processes spawned by the distiller. Their sessions get no
+/// injection and are never distilled — otherwise each distillation would
+/// spawn another one (recursion guard).
+const DISTILL_ENV: &str = "COOPERA_DISTILL";
+
 fn read_input() -> HookInput {
     let mut buf = String::new();
     let _ = std::io::stdin().read_to_string(&mut buf);
@@ -28,6 +33,14 @@ fn working_dir(input: &HookInput) -> PathBuf {
 /// F2 — SessionStart: build the injection pack from the wiki (L0+L1) under the
 /// hard token budget, with a one-line visible trace.
 pub fn session_start() -> i32 {
+    if std::env::var_os(DISTILL_ENV).is_some() {
+        let quiet = HookOutput::session_start(String::new(), None);
+        println!(
+            "{}",
+            serde_json::to_string(&quiet).unwrap_or_else(|_| "{}".to_string())
+        );
+        return 0;
+    }
     let input = read_input();
     let dir = working_dir(&input);
 
@@ -69,25 +82,25 @@ pub fn session_start() -> i32 {
     }
 }
 
-/// F3 (skeleton) — SessionEnd: schedule background distillation and exit
-/// immediately so session teardown is never delayed.
-///
-/// TODO(F3): acceptance criteria (03-prd):
-/// - spawn `coopera distill --transcript <path>` detached
-/// - distiller calls the user's own agent (`claude -p`) with the digest schema
-/// - digest -> wiki/sessions/, wiki diff staged on the working branch
-/// - redaction before persistence; failure leaves an undistilled marker
+/// F3 — SessionEnd: spawn background distillation (detached) and exit
+/// immediately so session teardown is never delayed. The distiller itself
+/// lives in cmd_distill.
 pub fn session_end() -> i32 {
+    if std::env::var_os(DISTILL_ENV).is_some() {
+        return 0; // never distill the distiller's own session
+    }
     let input = read_input();
     let dir = working_dir(&input);
 
     if let (Some(transcript), Ok(git)) = (&input.transcript_path, Git::discover(&dir)) {
         let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("coopera"));
+        let mut cmd = std::process::Command::new(exe);
+        cmd.arg("distill").arg("--transcript").arg(transcript);
+        if let Some(session) = &input.session_id {
+            cmd.arg("--session").arg(session);
+        }
         // Detached spawn: we intentionally do not wait.
-        let _ = std::process::Command::new(exe)
-            .arg("distill")
-            .arg("--transcript")
-            .arg(transcript)
+        let _ = cmd
             .current_dir(&git.root)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())

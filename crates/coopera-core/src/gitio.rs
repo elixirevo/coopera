@@ -65,6 +65,33 @@ impl Git {
             })
             .collect()
     }
+
+    /// Stage the given repo-relative paths.
+    pub fn add(&self, paths: &[String]) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let mut args: Vec<&str> = vec!["add", "--"];
+        args.extend(paths.iter().map(|s| s.as_str()));
+        self.run(&args)?;
+        Ok(())
+    }
+
+    /// Short HEAD sha; None before the first commit.
+    pub fn head_short(&self) -> Option<String> {
+        self.run(&["rev-parse", "--short", "HEAD"])
+            .ok()
+            .map(|s| s.trim().to_string())
+    }
+
+    /// Configured git user name (digest attribution); "unknown" if unset.
+    pub fn user_name(&self) -> String {
+        self.run(&["config", "user.name"])
+            .map(|s| s.trim().to_string())
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "unknown".to_string())
+    }
 }
 
 #[cfg(test)]

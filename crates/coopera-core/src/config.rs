@@ -23,10 +23,38 @@ impl Default for Budget {
     }
 }
 
+/// Distillation settings (F3). The command is the user's own agent run
+/// headlessly — coopera never carries its own API key (implementation
+/// decision, 01-idea-brief).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Distill {
+    /// Agent command; receives the prompt on stdin.
+    pub command: String,
+    /// Arguments passed to the command (e.g. ["-p"] for `claude -p`).
+    pub args: Vec<String>,
+    pub timeout_secs: u64,
+    /// Sessions with fewer conversation messages than this are skipped
+    /// (substance threshold — empty sessions produce no digest).
+    pub min_messages: usize,
+}
+
+impl Default for Distill {
+    fn default() -> Self {
+        Self {
+            command: "claude".to_string(),
+            args: vec!["-p".to_string()],
+            timeout_secs: 180,
+            min_messages: 3,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub budget: Budget,
+    pub distill: Distill,
 }
 
 impl Config {

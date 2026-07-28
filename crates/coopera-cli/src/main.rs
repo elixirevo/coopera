@@ -35,7 +35,10 @@ enum Cmd {
         /// Path to the session transcript to distill.
         #[arg(long)]
         transcript: Option<String>,
-        /// Retroactively distill sessions that were never distilled.
+        /// Session id for attribution (defaults to the transcript file stem).
+        #[arg(long)]
+        session: Option<String>,
+        /// Retroactively distill sessions left in the retro queue.
         #[arg(long)]
         retro: bool,
     },
@@ -70,7 +73,11 @@ fn main() {
             HookEvent::SessionStart => cmd_hook::session_start(),
             HookEvent::SessionEnd => cmd_hook::session_end(),
         },
-        Cmd::Distill { transcript, retro } => cmd_distill::run(transcript.as_deref(), retro),
+        Cmd::Distill {
+            transcript,
+            session,
+            retro,
+        } => cmd_distill::run(transcript.as_deref(), session.as_deref(), retro),
         Cmd::Wiki { cmd } => match cmd {
             WikiCmd::Lint => cmd_wiki::lint(),
         },

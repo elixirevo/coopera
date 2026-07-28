@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod digest;
+pub mod distill;
 pub mod gitio;
 pub mod hookio;
 pub mod inject;

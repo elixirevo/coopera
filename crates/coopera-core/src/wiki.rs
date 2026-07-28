@@ -18,13 +18,13 @@ pub struct Frontmatter {
     /// 1–3 line summary. This is what gets injected at L1 — required.
     pub summary: String,
     /// Commit the page was last verified against. None = never verified (draft).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_verified: Option<String>,
     /// "high" (human-reviewed) or "draft" (auto-distilled, unreviewed).
     #[serde(default = "default_confidence")]
     pub confidence: String,
     /// Source session digest path, if auto-distilled.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
 }
 
@@ -102,6 +102,14 @@ pub fn load_wiki(repo_root: &Path) -> (Vec<Page>, Vec<LintIssue>) {
     (pages, errors)
 }
 
+/// Serialize a page back to disk form (frontmatter + body).
+pub fn render(front: &Frontmatter, body: &str) -> Result<String> {
+    let yaml = serde_yaml::to_string(front).context("failed to serialize frontmatter")?;
+    let mut body = body.trim_end().to_string();
+    body.push('\n');
+    Ok(format!("---\n{yaml}---\n\n{body}"))
+}
+
 /// F4 lint rules: summary/anchors required, body length cap, known type.
 pub fn lint(page: &Page) -> Vec<LintIssue> {
     let mut issues = Vec::new();
@@ -171,5 +179,19 @@ mod tests {
     #[test]
     fn rejects_file_without_frontmatter() {
         assert!(parse_page(Path::new("x.md"), "just text").is_err());
+    }
+
+    #[test]
+    fn render_round_trips() {
+        let p = parse_page(Path::new("x.md"), GOOD).unwrap();
+        let rendered = render(&p.front, &p.body).unwrap();
+        let again = parse_page(Path::new("x.md"), &rendered).unwrap();
+        assert_eq!(again.front.title, p.front.title);
+        assert_eq!(again.front.anchors, p.front.anchors);
+        assert_eq!(again.body.trim(), p.body.trim());
+        assert!(
+            !rendered.contains("last_verified"),
+            "None fields must be omitted: {rendered}"
+        );
     }
 }
