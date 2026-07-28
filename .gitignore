@@ -1,0 +1,4 @@
+/target
+.coopera/cache/
+.DS_Store
+*.log
