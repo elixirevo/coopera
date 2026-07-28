@@ -1,0 +1,15 @@
+[[hooks.SessionStart]]
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "echo SESSIONSTART-FIRED >> .coopera/cache/hook-marker.log"
+
+[[hooks.UserPromptSubmit]]
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "echo PROMPTSUBMIT-FIRED >> .coopera/cache/hook-marker.log"
+
+[[hooks.PreToolUse]]
+matcher = ".*"
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "echo PRETOOLUSE-FIRED >> .coopera/cache/hook-marker.log"
