@@ -1,15 +1,17 @@
+
+# --- coopera hooks (managed) ---
 [[hooks.SessionStart]]
 [[hooks.SessionStart.hooks]]
 type = "command"
-command = "echo SESSIONSTART-FIRED >> .coopera/cache/hook-marker.log"
+command = "COOPERA_TOOL=codex \"/Users/elixir/dev/project/elixirevo/coopera/target/release/coopera\" hook session-start"
 
 [[hooks.UserPromptSubmit]]
 [[hooks.UserPromptSubmit.hooks]]
 type = "command"
-command = "echo PROMPTSUBMIT-FIRED >> .coopera/cache/hook-marker.log"
+command = "COOPERA_TOOL=codex \"/Users/elixir/dev/project/elixirevo/coopera/target/release/coopera\" hook user-prompt-submit"
 
-[[hooks.PreToolUse]]
-matcher = ".*"
-[[hooks.PreToolUse.hooks]]
+[[hooks.SessionEnd]]
+[[hooks.SessionEnd.hooks]]
 type = "command"
-command = "echo PRETOOLUSE-FIRED >> .coopera/cache/hook-marker.log"
+command = "COOPERA_TOOL=codex \"/Users/elixir/dev/project/elixirevo/coopera/target/release/coopera\" hook session-end"
+

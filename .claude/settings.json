@@ -19,6 +19,16 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "COOPERA_TOOL=claude-code \"/Users/elixir/dev/project/elixirevo/coopera/target/release/coopera\" hook user-prompt-submit",
+            "type": "command"
+          }
+        ]
+      }
     ]
   }
 }
