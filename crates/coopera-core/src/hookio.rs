@@ -40,14 +40,18 @@ pub struct HookOutput {
 }
 
 impl HookOutput {
-    pub fn session_start(context: String, message: Option<String>) -> Self {
+    pub fn for_event(event: &str, context: String, message: Option<String>) -> Self {
         Self {
             hook_specific_output: HookSpecificOutput {
-                hook_event_name: "SessionStart".to_string(),
+                hook_event_name: event.to_string(),
                 additional_context: context,
             },
             system_message: message,
         }
+    }
+
+    pub fn session_start(context: String, message: Option<String>) -> Self {
+        Self::for_event("SessionStart", context, message)
     }
 }
 

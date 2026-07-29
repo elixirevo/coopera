@@ -1,6 +1,8 @@
 use anyhow::{bail, Context, Result};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// Thin wrapper over the system `git` binary. Decision 03: shell-out over
 /// libraries — all needed operations are plumbing commands verified in spikes.
@@ -110,6 +112,153 @@ impl Git {
             .map(str::to_string)
             .filter(|l| !l.is_empty())
             .collect())
+    }
+
+    fn run_with_stdin(&self, args: &[&str], input: &str) -> Result<String> {
+        let mut child = Command::new("git")
+            .arg("-C")
+            .arg(&self.root)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("failed to execute git")?;
+        child
+            .stdin
+            .take()
+            .context("no stdin")?
+            .write_all(input.as_bytes())?;
+        let out = child.wait_with_output()?;
+        if !out.status.success() {
+            bail!(
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// Run a network-touching git command with a hard timeout — SessionStart
+    /// has a latency budget, and a hanging remote must never block a session.
+    pub fn run_network(&self, args: &[&str], timeout: Duration) -> Result<()> {
+        let mut child = Command::new("git")
+            .arg("-C")
+            .arg(&self.root)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("failed to execute git")?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(status) = child.try_wait()? {
+                if status.success() {
+                    return Ok(());
+                }
+                bail!("git {args:?} failed");
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                bail!("git {args:?} timed out after {timeout:?}");
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    /// Fire-and-forget network command (background push) — never blocks.
+    pub fn spawn_network(&self, args: &[&str]) {
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(&self.root)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+
+    /// True if the repo has a remote named origin.
+    pub fn has_origin(&self) -> bool {
+        self.run(&["remote", "get-url", "origin"]).is_ok()
+    }
+
+    /// Point `refname` at a single-file tree containing `content` (plumbing
+    /// path verified in spike ①: hash-object → mktree → commit-tree).
+    pub fn update_ref_with_file(
+        &self,
+        refname: &str,
+        file_name: &str,
+        content: &str,
+        message: &str,
+    ) -> Result<()> {
+        let blob = self
+            .run_with_stdin(&["hash-object", "-w", "--stdin"], content)?
+            .trim()
+            .to_string();
+        let tree = self
+            .run_with_stdin(&["mktree"], &format!("100644 blob {blob}\t{file_name}\n"))?
+            .trim()
+            .to_string();
+        let commit = self
+            .run(&["commit-tree", &tree, "-m", message])?
+            .trim()
+            .to_string();
+        self.run(&["update-ref", refname, &commit])?;
+        Ok(())
+    }
+
+    /// Read `file_name` from the tree a ref points at.
+    pub fn read_ref_file(&self, refname: &str, file_name: &str) -> Result<String> {
+        self.run(&["cat-file", "-p", &format!("{refname}:{file_name}")])
+    }
+
+    /// List refs matching `pattern` (full ref names).
+    pub fn list_refs(&self, pattern: &str) -> Vec<String> {
+        self.run(&["for-each-ref", "--format=%(refname)", pattern])
+            .map(|out| out.lines().map(str::to_string).collect())
+            .unwrap_or_default()
+    }
+
+    /// Delete a local ref (ignores absence).
+    pub fn delete_ref(&self, refname: &str) {
+        let _ = self.run(&["update-ref", "-d", refname]);
+    }
+
+    /// The default branch's remote-tracking name (e.g. "origin/main").
+    pub fn default_remote_branch(&self) -> String {
+        self.run(&["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| "origin/main".to_string())
+    }
+
+    /// Recently active remote branches: (short name, unix committer date,
+    /// last commit subject), newest first, default branch and HEAD excluded.
+    pub fn recent_remote_branches(&self, max: usize) -> Vec<(String, i64, String)> {
+        let default = self.default_remote_branch();
+        let Ok(out) = self.run(&[
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)\t%(committerdate:unix)\t%(contents:subject)",
+            "refs/remotes/origin",
+        ]) else {
+            return Vec::new();
+        };
+        out.lines()
+            .filter_map(|l| {
+                let mut parts = l.splitn(3, '\t');
+                let name = parts.next()?.to_string();
+                let date: i64 = parts.next()?.parse().ok()?;
+                let subject = parts.next().unwrap_or("").to_string();
+                if name == default || name.ends_with("/HEAD") || name == "origin" {
+                    return None;
+                }
+                Some((name, date, subject))
+            })
+            .take(max)
+            .collect()
     }
 }
 

@@ -61,6 +61,10 @@ fn m1_vertical_slice() {
     assert!(dir.join(".coopera/config.toml").exists());
     let settings = std::fs::read_to_string(dir.join(".claude/settings.json")).unwrap();
     assert!(settings.contains("hook session-start"), "{settings}");
+    assert!(settings.contains("hook user-prompt-submit"), "{settings}");
+    let codex = std::fs::read_to_string(dir.join(".codex/config.toml")).unwrap();
+    assert!(codex.contains("[[hooks.SessionStart]]"), "{codex}");
+    assert!(codex.contains("COOPERA_TOOL=codex"), "{codex}");
     assert!(std::fs::read_to_string(dir.join("AGENTS.md"))
         .unwrap()
         .contains("coopera"));
@@ -265,5 +269,123 @@ JSON
     assert!(
         !queue.contains("abcd1234"),
         "queue must be cleared on success: {queue}"
+    );
+}
+
+/// M2 — presence across two clones through a bare origin: publish at
+/// SessionStart, cross-visibility, intent refresh + trigger injection at
+/// UserPromptSubmit, cleanup at SessionEnd (F5/F6/F7 e2e).
+#[test]
+fn m2_presence_cross_clone() {
+    let origin = tempfile::tempdir().unwrap();
+    git(origin.path(), &["init", "-q", "--bare"]);
+    let work = tempfile::tempdir().unwrap();
+    let a = work.path().join("a");
+    let b = work.path().join("b");
+    let origin_s = origin.path().to_str().unwrap();
+    git(work.path(), &["clone", "-q", origin_s, a.to_str().unwrap()]);
+    git(work.path(), &["clone", "-q", origin_s, b.to_str().unwrap()]);
+    for (dir, name) in [(&a, "Alice"), (&b, "Bob")] {
+        git(
+            dir,
+            &["config", "user.email", &format!("{name}@example.com")],
+        );
+        git(dir, &["config", "user.name", name]);
+    }
+
+    // Alice installs and starts a session -> presence ref reaches origin.
+    let (_, stderr, ok) = run_in(&a, &["init"], None);
+    assert!(ok, "init A failed: {stderr}");
+    let (_, stderr, ok) = run_in(
+        &a,
+        &["hook", "session-start"],
+        Some(r#"{"session_id":"sess-aaaa-1111"}"#),
+    );
+    assert!(ok, "session-start A failed: {stderr}");
+    assert!(a.join(".coopera/cache/presence.md").exists());
+    let out = Command::new("git")
+        .args(["ls-remote", origin_s, "refs/coopera/presence/*"])
+        .output()
+        .unwrap();
+    let refs = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        refs.contains("refs/coopera/presence/Alice/sess-aaaa-1111"),
+        "Alice's presence must reach origin: {refs}"
+    );
+
+    // Bob starts a session and sees Alice in the injected activity map.
+    let (_, stderr, ok) = run_in(&b, &["init"], None);
+    assert!(ok, "init B failed: {stderr}");
+    let (stdout, stderr, ok) = run_in(
+        &b,
+        &["hook", "session-start"],
+        Some(r#"{"session_id":"sess-bbbb-2222"}"#),
+    );
+    assert!(ok, "session-start B failed: {stderr}");
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let ctx = json["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(ctx.contains("Active teammate work"), "{ctx}");
+    assert!(ctx.contains("Alice"), "Alice must be visible to Bob: {ctx}");
+    assert!(
+        json["systemMessage"]
+            .as_str()
+            .unwrap()
+            .contains("teammate signal"),
+        "{json}"
+    );
+
+    // Bob's prompt refreshes his intent (local ref) and triggers a page.
+    std::fs::write(
+        b.join("wiki/concepts/idem.md"),
+        "---\ntitle: Idempotency\ntype: concept\nanchors: [\"src/\"]\ntriggers: [idempotency]\nsummary: Dedup via DB unique constraints.\nconfidence: high\n---\n\nBody.\n",
+    )
+    .unwrap();
+    let (stdout, stderr, ok) = run_in(
+        &b,
+        &["hook", "user-prompt-submit"],
+        Some(r#"{"session_id":"sess-bbbb-2222","prompt":"Work on payment idempotency now"}"#),
+    );
+    assert!(ok, "user-prompt-submit failed: {stderr}");
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let ctx = json["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(
+        ctx.contains("Dedup via DB unique constraints."),
+        "trigger-matched summary must be injected: {ctx}"
+    );
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(&b)
+        .args([
+            "cat-file",
+            "-p",
+            "refs/coopera/presence/Bob/sess-bbbb-2222:presence.yaml",
+        ])
+        .output()
+        .unwrap();
+    let yaml = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        yaml.contains("payment idempotency"),
+        "intent refresh: {yaml}"
+    );
+
+    // Alice's session ends -> her ref is removed from origin.
+    let (_, _, ok) = run_in(
+        &a,
+        &["hook", "session-end"],
+        Some(r#"{"session_id":"sess-aaaa-1111"}"#),
+    );
+    assert!(ok);
+    let out = Command::new("git")
+        .args(["ls-remote", origin_s, "refs/coopera/presence/*"])
+        .output()
+        .unwrap();
+    let refs = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        !refs.contains("Alice"),
+        "Alice's presence must be cleaned up: {refs}"
     );
 }

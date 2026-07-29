@@ -16,6 +16,8 @@ pub struct InjectionPack {
     pub tokens: usize,
     /// Pages excluded because their anchored code changed since verification.
     pub stale: usize,
+    /// Teammate-activity lines included (presence + branch signals).
+    pub presence_items: usize,
 }
 
 /// Rough token estimate (chars/4). Good enough for hard-cap budgeting.
@@ -74,6 +76,7 @@ pub fn build_pack(
     changed: &[String],
     budget: &Budget,
     stale: &HashSet<PathBuf>,
+    presence: &[String],
 ) -> InjectionPack {
     let mut ranked: Vec<(&Page, i64)> = pages
         .iter()
@@ -134,28 +137,49 @@ pub fn build_pack(
         )
     };
 
-    if lines.is_empty() && stale_note.is_empty() {
+    // Presence section (F5/F7) under its own budget slice, teammate work first.
+    let mut presence_lines: Vec<String> = Vec::new();
+    let mut presence_tokens = 0usize;
+    for line in presence {
+        let t = estimate_tokens(line);
+        if presence_tokens + t > budget.presence {
+            break;
+        }
+        presence_tokens += t;
+        presence_lines.push(line.clone());
+    }
+
+    if lines.is_empty() && stale_note.is_empty() && presence_lines.is_empty() {
         return InjectionPack {
             text: String::new(),
             items: 0,
             tokens: 0,
             stale: 0,
+            presence_items: 0,
         };
     }
 
     let compose = |lines: &[String]| {
-        let mut text =
-            String::from("<team-context source=\"coopera\">\n## Team knowledge (wiki/)\n");
-        if lines.is_empty() {
-            text.push_str("(no fresh pages)");
-        } else {
-            text.push_str(&lines.join("\n"));
-        }
-        if !stale_note.is_empty() {
+        let mut text = String::from("<team-context source=\"coopera\">\n");
+        if !presence_lines.is_empty() {
+            text.push_str("## Active teammate work\n");
+            text.push_str(&presence_lines.join("\n"));
             text.push_str("\n\n");
-            text.push_str(&stale_note);
         }
-        text.push_str("\n\n## Guidance\n");
+        if !lines.is_empty() || !stale_note.is_empty() {
+            text.push_str("## Team knowledge (wiki/)\n");
+            if lines.is_empty() {
+                text.push_str("(no fresh pages)");
+            } else {
+                text.push_str(&lines.join("\n"));
+            }
+            if !stale_note.is_empty() {
+                text.push_str("\n\n");
+                text.push_str(&stale_note);
+            }
+            text.push_str("\n\n");
+        }
+        text.push_str("## Guidance\n");
         text.push_str(GUIDANCE);
         text.push_str("\n</team-context>");
         text
@@ -175,6 +199,7 @@ pub fn build_pack(
         text,
         tokens,
         stale: stale_count,
+        presence_items: presence_lines.len(),
     }
 }
 
@@ -217,6 +242,7 @@ mod tests {
             &["src/payments/retry.rs".into()],
             &Budget::default(),
             &no_stale(),
+            &[],
         );
         let first = pack.text.lines().nth(2).unwrap();
         assert!(
@@ -245,7 +271,14 @@ mod tests {
             wiki: 200,
             instructions: 100,
         };
-        let pack = build_pack(&pages, "main", &["src/x.rs".into()], &budget, &no_stale());
+        let pack = build_pack(
+            &pages,
+            "main",
+            &["src/x.rs".into()],
+            &budget,
+            &no_stale(),
+            &[],
+        );
         assert!(pack.tokens <= 400, "total cap violated: {}", pack.tokens);
         assert!(pack.items < 100);
         assert!(pack.items >= 1);
@@ -253,7 +286,7 @@ mod tests {
 
     #[test]
     fn empty_wiki_injects_nothing() {
-        let pack = build_pack(&[], "main", &[], &Budget::default(), &no_stale());
+        let pack = build_pack(&[], "main", &[], &Budget::default(), &no_stale(), &[]);
         assert_eq!(pack.items, 0);
         assert!(pack.text.is_empty());
     }
@@ -273,7 +306,7 @@ mod tests {
             "Auth uses session tokens.",
         );
         let stale: HashSet<PathBuf> = [old.path.clone()].into();
-        let pack = build_pack(&[fresh, old], "main", &[], &Budget::default(), &stale);
+        let pack = build_pack(&[fresh, old], "main", &[], &Budget::default(), &stale, &[]);
         assert_eq!(pack.items, 1);
         assert_eq!(pack.stale, 1);
         assert!(
@@ -292,10 +325,38 @@ mod tests {
     fn all_stale_still_emits_pointers() {
         let old = page("only", "concept", "\"src/\"", "Old summary.");
         let stale: HashSet<PathBuf> = [old.path.clone()].into();
-        let pack = build_pack(&[old], "main", &[], &Budget::default(), &stale);
+        let pack = build_pack(&[old], "main", &[], &Budget::default(), &stale, &[]);
         assert_eq!(pack.items, 0);
         assert_eq!(pack.stale, 1);
         assert!(pack.text.contains("(no fresh pages)"));
         assert!(pack.text.contains("wiki/concepts/only.md"));
+    }
+
+    #[test]
+    fn presence_section_leads_and_respects_budget() {
+        let presence = vec![
+            "- alice · claude-code · branch pay — refactor retries (active, just now)".to_string(),
+            "- (branch) origin/pay-idem — last commit: \"wip\" (2h ago)".to_string(),
+        ];
+        let pages = vec![page("note", "concept", "\"src/\"", "Summary.")];
+        let pack = build_pack(
+            &pages,
+            "main",
+            &[],
+            &Budget::default(),
+            &no_stale(),
+            &presence,
+        );
+        assert_eq!(pack.presence_items, 2);
+        let p_idx = pack.text.find("Active teammate work").unwrap();
+        let k_idx = pack.text.find("Team knowledge").unwrap();
+        assert!(p_idx < k_idx, "presence must lead: {}", pack.text);
+
+        let tiny = Budget {
+            presence: 10,
+            ..Budget::default()
+        };
+        let pack = build_pack(&pages, "main", &[], &tiny, &no_stale(), &presence);
+        assert!(pack.presence_items < 2, "presence budget must truncate");
     }
 }

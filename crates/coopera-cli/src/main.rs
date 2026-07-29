@@ -53,9 +53,11 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum HookEvent {
-    /// SessionStart: build and emit the team-context injection pack (F2).
+    /// SessionStart: presence fetch/publish + team-context injection (F2/F5/F7).
     SessionStart,
-    /// SessionEnd: schedule background distillation (F3).
+    /// UserPromptSubmit: intent refresh + trigger-matched injection (F6).
+    UserPromptSubmit,
+    /// SessionEnd: presence cleanup + background distillation (F3/F5).
     SessionEnd,
 }
 
@@ -71,6 +73,7 @@ fn main() {
         Cmd::Init => cmd_init::run(),
         Cmd::Hook { event } => match event {
             HookEvent::SessionStart => cmd_hook::session_start(),
+            HookEvent::UserPromptSubmit => cmd_hook::user_prompt_submit(),
             HookEvent::SessionEnd => cmd_hook::session_end(),
         },
         Cmd::Distill {
