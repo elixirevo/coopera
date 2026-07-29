@@ -143,23 +143,36 @@ fn ensure_gitignore_line(root: &Path, line: &str, actions: &mut Vec<String>) -> 
     Ok(())
 }
 
-/// Merge coopera hooks into .claude/settings.json, preserving everything else.
+/// Hook command with graceful degradation: try the installer's absolute
+/// binary path, fall back to `coopera` on PATH, and if neither exists emit a
+/// valid empty hook reply. Teammates who cloned but did not install coopera
+/// get read-only mode (AGENTS.md-compiled guidance) with zero error noise —
+/// the partial-adoption contract (01-idea-brief).
+fn guarded_command(exe: &str, tool: &str, sub: &str) -> String {
+    format!(
+        "c=\"{exe}\"; [ -x \"$c\" ] || c=\"$(command -v coopera)\"; [ -x \"$c\" ] && COOPERA_TOOL={tool} \"$c\" hook {sub} || echo {{}}"
+    )
+}
+
+/// Merge coopera hooks into .claude/settings.json, preserving everything
+/// else. Our entries are rebuilt each run (upgrades replace old formats);
+/// the file is only written when the parsed value actually changes.
 fn install_claude_hooks(root: &Path, actions: &mut Vec<String>) -> Result<()> {
     let exe = std::env::current_exe().context("cannot resolve coopera binary path")?;
     let exe = exe.to_string_lossy();
     let path = root.join(".claude/settings.json");
-    let mut settings: serde_json::Value = match std::fs::read_to_string(&path) {
+    let original: serde_json::Value = match std::fs::read_to_string(&path) {
         Ok(s) => serde_json::from_str(&s).context(".claude/settings.json is not valid JSON")?,
         Err(_) => serde_json::json!({}),
     };
+    let mut settings = original.clone();
 
-    let mut changed = false;
     for (event, sub) in [
         ("SessionStart", "session-start"),
         ("UserPromptSubmit", "user-prompt-submit"),
         ("SessionEnd", "session-end"),
     ] {
-        let command = format!("COOPERA_TOOL=claude-code \"{exe}\" hook {sub}");
+        let command = guarded_command(&exe, "claude-code", sub);
         let hooks = settings
             .as_object_mut()
             .context("settings.json root must be an object")?
@@ -173,15 +186,12 @@ fn install_claude_hooks(root: &Path, actions: &mut Vec<String>) -> Result<()> {
         let list = entries
             .as_array_mut()
             .context("hook event entry must be an array")?;
-        let already = list.iter().any(|e| e.to_string().contains("coopera"));
-        if !already {
-            list.push(serde_json::json!({
-                "hooks": [{ "type": "command", "command": command }]
-            }));
-            changed = true;
-        }
+        list.retain(|e| !e.to_string().contains("coopera"));
+        list.push(serde_json::json!({
+            "hooks": [{ "type": "command", "command": command }]
+        }));
     }
-    if changed {
+    if settings != original {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -191,34 +201,48 @@ fn install_claude_hooks(root: &Path, actions: &mut Vec<String>) -> Result<()> {
     Ok(())
 }
 
+const CODEX_MARKER: &str = "# --- coopera hooks (managed) ---";
+
 /// F8 — register Codex hooks (verified schema, spike ③: project
 /// `.codex/config.toml` with `[[hooks.EventName]]` tables; PascalCase events,
-/// command handlers only). Appended as a managed block; skipped when present.
-/// Note: the project must be trusted in Codex and the hook definitions
-/// approved once via `/hooks` (documented in README/onboarding).
+/// command handlers only). The managed block (marker to EOF) is regenerated
+/// each run so upgrades propagate. TOML literal strings carry the guarded
+/// command. Note: the project must be trusted in Codex and the hook
+/// definitions approved once via `/hooks`.
 fn install_codex_hooks(root: &Path, actions: &mut Vec<String>) -> Result<()> {
     let exe = std::env::current_exe().context("cannot resolve coopera binary path")?;
     let exe = exe.to_string_lossy();
     let path = root.join(".codex/config.toml");
     let current = std::fs::read_to_string(&path).unwrap_or_default();
-    if current.contains("coopera") {
-        return Ok(());
-    }
-    let mut block = String::from("\n# --- coopera hooks (managed) ---\n");
+    let prefix = match current.find(CODEX_MARKER) {
+        Some(i) => current[..i].trim_end().to_string(),
+        None => current.trim_end().to_string(),
+    };
+
+    let mut block =
+        format!("{CODEX_MARKER}\n# Keep this block last in the file; init regenerates it.\n");
     for (event, sub) in [
         ("SessionStart", "session-start"),
         ("UserPromptSubmit", "user-prompt-submit"),
         ("SessionEnd", "session-end"),
     ] {
+        let command = guarded_command(&exe, "codex", sub);
         block.push_str(&format!(
-            "[[hooks.{event}]]\n[[hooks.{event}.hooks]]\ntype = \"command\"\ncommand = \"COOPERA_TOOL=codex \\\"{exe}\\\" hook {sub}\"\n\n"
+            "[[hooks.{event}]]\n[[hooks.{event}.hooks]]\ntype = \"command\"\ncommand = '{command}'\n\n"
         ));
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+    let next = if prefix.is_empty() {
+        block.trim_end().to_string() + "\n"
+    } else {
+        format!("{prefix}\n\n{}\n", block.trim_end())
+    };
+    if next != current {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, next)?;
+        actions.push("registered Codex hooks (.codex/config.toml)".to_string());
     }
-    std::fs::write(&path, current + &block)?;
-    actions.push("registered Codex hooks (.codex/config.toml)".to_string());
     Ok(())
 }
 
