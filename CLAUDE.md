@@ -36,7 +36,7 @@ echo '{}' | cargo run -p coopera-cli -- hook session-start
 - [x] F3 세션 종료 증류 — **구현 완료** (2026-07-29): 에이전트 headless 호출(설정 가능, 기본 `claude -p`, 프롬프트는 stdin)→고정 스키마 JSON 파싱→다이제스트(wiki/sessions/)→위키 초안 create/update(린트 게이트+레드액션+wiki/ 경로 탈출 차단)→스테이징(코드 PR 동승)→성공 시 retro 큐 해제. 재귀 가드 COOPERA_DISTILL. 스텁 e2e + **실 `claude -p` 검증 완료**(결정 2·학습 1·고품질 초안 생성 확인)
 - [x] F3 후속: 유사 페이지 update 우선(프롬프트 지시+update 액션), 실패 시 undistilled 마커·`--retro`로 소급 처리
 - [x] F4 위키 린트: 스키마 검증, 위반 시 비0 종료 — 스모크 테스트 통과
-- [ ] stale 페이지 주입 제외 — last_verified 비교 로직 미구현(현재 draft 감점만)
+- [x] stale 페이지 주입 제외 — **구현 완료** (2026-07-29): 기준은 페이지 자신의 마지막 커밋(코드 PR 동승 머지 = 재검증; last_verified는 미커밋 페이지의 폴백·증빙용). 그 이후 커밋에서 anchors 매칭 파일이 바뀌면 stale → 요약 주입 제외 + 포인터 1줄("re-verify before relying") + systemMessage에 "N stale excluded". 미커밋 변경은 in-flight로 간주(staleness 아님). fail-open(알 수 없는 sha는 fresh)
 
 ### 구현 중 검증 항목 (PRD 미해결)
 

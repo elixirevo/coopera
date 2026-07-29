@@ -102,6 +102,12 @@ pub fn load_wiki(repo_root: &Path) -> (Vec<Page>, Vec<LintIssue>) {
     (pages, errors)
 }
 
+/// Anchor glob prefix ("src/payments/**" → "src/payments/"). Shared by
+/// injection ranking and staleness matching.
+pub fn anchor_prefix(anchor: &str) -> &str {
+    anchor.trim_end_matches("**").trim_end_matches('*')
+}
+
 /// Serialize a page back to disk form (frontmatter + body).
 pub fn render(front: &Frontmatter, body: &str) -> Result<String> {
     let yaml = serde_yaml::to_string(front).context("failed to serialize frontmatter")?;

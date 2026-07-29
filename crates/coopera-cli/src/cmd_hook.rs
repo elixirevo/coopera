@@ -6,6 +6,7 @@ use coopera_core::config::Config;
 use coopera_core::gitio::Git;
 use coopera_core::hookio::{HookInput, HookOutput};
 use coopera_core::inject;
+use coopera_core::staleness;
 use coopera_core::wiki;
 use std::io::Read;
 use std::path::PathBuf;
@@ -50,8 +51,9 @@ pub fn session_start() -> i32 {
             let (pages, errors) = wiki::load_wiki(&git.root);
             let branch = git.current_branch();
             let changed = git.changed_files();
-            let pack = inject::build_pack(&pages, &branch, &changed, &config.budget);
-            let mut msg = if pack.items == 0 {
+            let stale = staleness::find_stale(&git, &pages);
+            let pack = inject::build_pack(&pages, &branch, &changed, &config.budget, &stale);
+            let mut msg = if pack.items == 0 && pack.stale == 0 {
                 "coopera: no team context yet (wiki is empty)".to_string()
             } else {
                 format!(
@@ -59,6 +61,9 @@ pub fn session_start() -> i32 {
                     pack.items, pack.tokens
                 )
             };
+            if pack.stale > 0 {
+                msg.push_str(&format!(", {} stale excluded", pack.stale));
+            }
             if !errors.is_empty() {
                 msg.push_str(&format!(
                     " — {} unparseable wiki page(s), run `coopera wiki lint`",

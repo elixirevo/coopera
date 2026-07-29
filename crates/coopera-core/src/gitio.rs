@@ -92,6 +92,25 @@ impl Git {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "unknown".to_string())
     }
+
+    /// Sha of the last commit that touched `rel_path`; None if never committed.
+    pub fn last_commit_of(&self, rel_path: &str) -> Option<String> {
+        self.run(&["log", "-1", "--format=%H", "--", rel_path])
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Files changed in commits after `base` up to HEAD (committed changes
+    /// only — uncommitted work is in-flight context, not staleness).
+    pub fn changed_between(&self, base: &str) -> Result<Vec<String>> {
+        Ok(self
+            .run(&["diff", "--name-only", base, "HEAD"])?
+            .lines()
+            .map(str::to_string)
+            .filter(|l| !l.is_empty())
+            .collect())
+    }
 }
 
 #[cfg(test)]
