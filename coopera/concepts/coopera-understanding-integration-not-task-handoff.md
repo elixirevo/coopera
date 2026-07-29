@@ -14,7 +14,7 @@ triggers:
 summary: Coopera enables all team LLMs to develop under one shared codebase model (same concepts, decisions, gotchas), eliminating meaning collisions. Not a succession tool (A → B) but a synchronization tool (A and B know each other's world).
 last_verified: 5b26760
 confidence: draft
-source: wiki/sessions/20260729-003529-6edfa020.md
+source: coopera/sessions/20260729-003529-6edfa020.md
 ---
 
 ## Not Handoff

@@ -11,7 +11,7 @@ triggers:
 summary: Presence shows who/what-branch/intent for coordination only. No time tracking, metrics, or performance inference — opt-out guaranteed.
 last_verified: c45d2bb
 confidence: draft
-source: wiki/sessions/20260729-010048-c551ba6c.md
+source: coopera/sessions/20260729-010048-c551ba6c.md
 ---
 
 Presence enables: "I see you're on auth branch — can I touch session-token code?"

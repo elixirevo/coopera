@@ -10,7 +10,7 @@ triggers:
 summary: Each tool distills its own sessions (claude -p, codex exec, Antigravity fallback) — no API key, cost on user's subscription.
 last_verified: c45d2bb
 confidence: draft
-source: wiki/sessions/20260729-010048-c551ba6c.md
+source: coopera/sessions/20260729-010048-c551ba6c.md
 ---
 
 Centralized distillation requires shared API key (cost ambiguity) or hosted server (violates zero-servers). Instead:

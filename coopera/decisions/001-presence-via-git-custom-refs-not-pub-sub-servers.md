@@ -13,7 +13,7 @@ triggers:
 summary: Developer presence (who works on what, in which session, with what intent) lives in per-session git custom refs (refs/coopera/presence/<user>/<session>), fetched once at SessionStart. Avoids servers, merge conflicts, and real-time subscription issues.
 last_verified: 5b26760
 confidence: draft
-source: wiki/sessions/20260729-003529-6edfa020.md
+source: coopera/sessions/20260729-003529-6edfa020.md
 ---
 
 ## Problem

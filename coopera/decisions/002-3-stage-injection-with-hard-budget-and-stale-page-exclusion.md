@@ -13,7 +13,7 @@ triggers:
 summary: Wiki injection happens in 3 stages (L0 always, L1 on match, L2 on pull) capped at ~1.5k tokens; pages with stale last_verified are excluded from main injection, marked for re-verification.
 last_verified: 5b26760
 confidence: draft
-source: wiki/sessions/20260729-003529-6edfa020.md
+source: coopera/sessions/20260729-003529-6edfa020.md
 ---
 
 ## Problem

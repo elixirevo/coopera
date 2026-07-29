@@ -1,7 +1,7 @@
 ---
 title: Using coopera
 type: playbook
-anchors: ["wiki/"]
+anchors: ["coopera/INDEX.md"]
 triggers: [coopera, wiki]
 summary: This repo shares team context via coopera — wiki pages are promoted by PR review; session digests are automatic.
 confidence: high

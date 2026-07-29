@@ -11,7 +11,7 @@ triggers:
 summary: 'SessionStart always displays ''1 line: team context injected'' — invisible injection fails (Cursor auto-memory proof).'
 last_verified: c45d2bb
 confidence: draft
-source: wiki/sessions/20260729-010048-c551ba6c.md
+source: coopera/sessions/20260729-010048-c551ba6c.md
 ---
 
 Cursor auto-Memories killed: invisible injection → users didn't know it happened → felt magical and untrustworthy → reverted to explicit AGENTS.md.
