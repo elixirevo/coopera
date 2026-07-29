@@ -13,7 +13,8 @@ const AGENT_SECTION: &str = "\
 This repository uses coopera, a harness that shares team context between AI coding sessions.\n\
 - Shared team knowledge lives in `wiki/` (concepts, modules, decisions, playbooks). Read `wiki/INDEX.md` first; do not bulk-read the whole wiki directory.\n\
 - Before planning or making design decisions, consult the injected team context and relevant wiki pages. Avoid conflicting with or duplicating in-flight teammate work; align with recorded team decisions.\n\
-- Session digests are written to `wiki/sessions/` automatically; wiki changes ride along with your code PR for human review.\n";
+- Session digests are written to `wiki/sessions/` automatically; wiki changes ride along with your code PR for human review.\n\
+- If your tool does not run coopera hooks (e.g. Antigravity), start each task by reading `.coopera/cache/presence.md` (teammate activity map) and `wiki/INDEX.md`.\n";
 
 const CONFIG_TEMPLATE: &str = "\
 # coopera configuration (defaults shown; all values optional)\n\
@@ -93,8 +94,9 @@ fn install() -> Result<String> {
     )?;
     ensure_gitignore_line(&root, ".coopera/cache/", &mut actions)?;
 
-    // 3) Claude Code hooks (.claude/settings.json) — merge, never clobber
+    // 3) Hooks: Claude Code (.claude/settings.json) + Codex (.codex/config.toml)
     install_claude_hooks(&root, &mut actions)?;
+    install_codex_hooks(&root, &mut actions)?;
 
     // 4) Agent instruction files: managed marker block in CLAUDE.md / AGENTS.md
     for file in ["CLAUDE.md", "AGENTS.md"] {
@@ -154,9 +156,10 @@ fn install_claude_hooks(root: &Path, actions: &mut Vec<String>) -> Result<()> {
     let mut changed = false;
     for (event, sub) in [
         ("SessionStart", "session-start"),
+        ("UserPromptSubmit", "user-prompt-submit"),
         ("SessionEnd", "session-end"),
     ] {
-        let command = format!("\"{exe}\" hook {sub}");
+        let command = format!("COOPERA_TOOL=claude-code \"{exe}\" hook {sub}");
         let hooks = settings
             .as_object_mut()
             .context("settings.json root must be an object")?
@@ -170,7 +173,7 @@ fn install_claude_hooks(root: &Path, actions: &mut Vec<String>) -> Result<()> {
         let list = entries
             .as_array_mut()
             .context("hook event entry must be an array")?;
-        let already = list.iter().any(|e| e.to_string().contains("hook session-"));
+        let already = list.iter().any(|e| e.to_string().contains("coopera"));
         if !already {
             list.push(serde_json::json!({
                 "hooks": [{ "type": "command", "command": command }]
@@ -185,6 +188,37 @@ fn install_claude_hooks(root: &Path, actions: &mut Vec<String>) -> Result<()> {
         std::fs::write(&path, serde_json::to_string_pretty(&settings)?)?;
         actions.push("registered Claude Code hooks (.claude/settings.json)".to_string());
     }
+    Ok(())
+}
+
+/// F8 — register Codex hooks (verified schema, spike ③: project
+/// `.codex/config.toml` with `[[hooks.EventName]]` tables; PascalCase events,
+/// command handlers only). Appended as a managed block; skipped when present.
+/// Note: the project must be trusted in Codex and the hook definitions
+/// approved once via `/hooks` (documented in README/onboarding).
+fn install_codex_hooks(root: &Path, actions: &mut Vec<String>) -> Result<()> {
+    let exe = std::env::current_exe().context("cannot resolve coopera binary path")?;
+    let exe = exe.to_string_lossy();
+    let path = root.join(".codex/config.toml");
+    let current = std::fs::read_to_string(&path).unwrap_or_default();
+    if current.contains("coopera") {
+        return Ok(());
+    }
+    let mut block = String::from("\n# --- coopera hooks (managed) ---\n");
+    for (event, sub) in [
+        ("SessionStart", "session-start"),
+        ("UserPromptSubmit", "user-prompt-submit"),
+        ("SessionEnd", "session-end"),
+    ] {
+        block.push_str(&format!(
+            "[[hooks.{event}]]\n[[hooks.{event}.hooks]]\ntype = \"command\"\ncommand = \"COOPERA_TOOL=codex \\\"{exe}\\\" hook {sub}\"\n\n"
+        ));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, current + &block)?;
+    actions.push("registered Codex hooks (.codex/config.toml)".to_string());
     Ok(())
 }
 

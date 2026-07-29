@@ -47,21 +47,22 @@ pub fn run(transcript: Option<&str>, session: Option<&str>, retro: bool) -> i32 
     }
 }
 
-/// F9 groundwork: process everything left in the retro queue (crashed
-/// sessions, hook-less tools). Each entry clears itself on success.
+/// F9 — retroactive distillation, the universal fallback for crashed
+/// sessions and hook-less tools (Antigravity). Two sources: the failure
+/// queue, and a scan of the Claude Code transcript store for sessions that
+/// never produced a digest.
 fn run_retro(git: &Git) -> i32 {
-    let pending = read_pending(&git.root);
-    if pending.is_empty() {
-        eprintln!("coopera distill --retro: queue is empty");
-        return 0;
-    }
     let mut done = 0usize;
+    let mut seen = 0usize;
+
+    let pending = read_pending(&git.root);
     for transcript in &pending {
         let path = Path::new(transcript);
         if !path.exists() {
             clear_pending(&git.root, transcript);
             continue;
         }
+        seen += 1;
         match distill_one(git, path, None) {
             Ok(summary) => {
                 clear_pending(&git.root, transcript);
@@ -71,11 +72,87 @@ fn run_retro(git: &Git) -> i32 {
             Err(e) => eprintln!("coopera distill --retro: {transcript}: {e:#}"),
         }
     }
-    eprintln!(
-        "coopera distill --retro: {done}/{} processed",
-        pending.len()
-    );
+
+    for path in scan_undistilled(git, 3) {
+        seen += 1;
+        match distill_one(git, &path, None) {
+            Ok(summary) => {
+                eprintln!("{summary}");
+                done += 1;
+            }
+            Err(e) => eprintln!("coopera distill --retro: {}: {e:#}", path.display()),
+        }
+    }
+
+    if seen == 0 {
+        eprintln!("coopera distill --retro: nothing to do");
+    } else {
+        eprintln!("coopera distill --retro: {done}/{seen} processed");
+    }
     0
+}
+
+/// Recent Claude Code transcripts for this repo that have no matching digest
+/// in wiki/sessions/. Digest filenames end in the 8-char session prefix, so
+/// matching is mechanical. Tiny transcripts are skipped (below substance).
+fn scan_undistilled(git: &Git, max: usize) -> Vec<PathBuf> {
+    let Some(home) = std::env::var_os("HOME") else {
+        return Vec::new();
+    };
+    let slug: String = git
+        .root
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c == '/' { '-' } else { c })
+        .collect();
+    let store = PathBuf::from(home).join(".claude/projects").join(slug);
+
+    let mut have: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Ok(entries) = std::fs::read_dir(git.root.join("wiki/sessions")) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if let Some(sid) = name.strip_suffix(".md").and_then(|n| n.rsplit('-').next()) {
+                have.insert(sid.to_string());
+            }
+        }
+    }
+
+    let now = std::time::SystemTime::now();
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&store) else {
+        return out;
+    };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("jsonl"))
+        .collect();
+    files.sort();
+    for path in files {
+        let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        let sid8: String = stem.chars().take(8).collect();
+        if have.contains(&sid8) {
+            continue;
+        }
+        let Ok(meta) = path.metadata() else { continue };
+        if meta.len() < 16 * 1024 {
+            continue;
+        }
+        if let Ok(modified) = meta.modified() {
+            if let Ok(age) = now.duration_since(modified) {
+                if age > Duration::from_secs(14 * 24 * 3600) {
+                    continue;
+                }
+            }
+        }
+        out.push(path);
+        if out.len() >= max {
+            break;
+        }
+    }
+    out
 }
 
 fn distill_one(git: &Git, transcript_path: &Path, session: Option<&str>) -> Result<String> {
