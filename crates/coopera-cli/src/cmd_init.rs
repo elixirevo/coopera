@@ -149,6 +149,9 @@ fn ensure_gitignore_line(root: &Path, line: &str, actions: &mut Vec<String>) -> 
 /// get read-only mode (AGENTS.md-compiled guidance) with zero error noise —
 /// the partial-adoption contract (01-idea-brief).
 fn guarded_command(exe: &str, tool: &str, sub: &str) -> String {
+    // Forward slashes keep the command valid for bash on Windows too
+    // (Claude Code runs hook commands through Git Bash there).
+    let exe = exe.replace('\\', "/");
     format!(
         "c=\"{exe}\"; [ -x \"$c\" ] || c=\"$(command -v coopera)\"; [ -x \"$c\" ] && COOPERA_TOOL={tool} \"$c\" hook {sub} || echo {{}}"
     )

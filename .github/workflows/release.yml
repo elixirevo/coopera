@@ -11,12 +11,16 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Format check
+        if: runner.os != 'Windows' # CRLF checkout noise; style is checked on Linux
         run: cargo fmt --check
       - name: Test
         run: cargo test --workspace
@@ -58,10 +62,16 @@ jobs:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
+            asset: coopera-aarch64-apple-darwin.tar.gz
           - os: macos-latest
             target: x86_64-apple-darwin
+            asset: coopera-x86_64-apple-darwin.tar.gz
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            asset: coopera-x86_64-unknown-linux-gnu.tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: coopera-x86_64-pc-windows-msvc.zip
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -73,12 +83,17 @@ jobs:
           key: ${{ matrix.target }}
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }} -p coopera-cli
-      - name: Package
-        run: |
-          tar -C "target/${{ matrix.target }}/release" -czf "coopera-${{ matrix.target }}.tar.gz" coopera
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        run: tar -C "target/${{ matrix.target }}/release" -czf "${{ matrix.asset }}" coopera
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path "target/${{ matrix.target }}/release/coopera.exe" -DestinationPath "${{ matrix.asset }}"
       - name: Upload asset
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload "${{ needs.prepare.outputs.channel }}" \
-            "coopera-${{ matrix.target }}.tar.gz" -R "$GITHUB_REPOSITORY" --clobber
+            "${{ matrix.asset }}" -R "$GITHUB_REPOSITORY" --clobber

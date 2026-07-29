@@ -103,7 +103,13 @@ fn scan_undistilled(git: &Git, max: usize) -> Vec<PathBuf> {
         .root
         .to_string_lossy()
         .chars()
-        .map(|c| if c == '/' { '-' } else { c })
+        .map(|c| {
+            if c == '/' || c == '\\' || c == ':' {
+                '-'
+            } else {
+                c
+            }
+        })
         .collect();
     let store = PathBuf::from(home).join(".claude/projects").join(slug);
 

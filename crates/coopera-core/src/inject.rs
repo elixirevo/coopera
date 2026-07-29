@@ -58,7 +58,8 @@ fn score(page: &Page, branch: &str, changed: &[String]) -> i64 {
 }
 
 fn rel_path(page: &Page) -> String {
-    let rel = page.path.to_string_lossy();
+    // Normalize separators so the split works on Windows paths too.
+    let rel = page.path.to_string_lossy().replace('\\', "/");
     rel.split("coopera/")
         .last()
         .map(|s| format!("coopera/{s}"))

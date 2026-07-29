@@ -202,7 +202,7 @@ fn trigger_context(git: &Git, prompt: &str) -> (String, usize) {
         if !hit {
             continue;
         }
-        let rel = page.path.to_string_lossy();
+        let rel = page.path.to_string_lossy().replace('\\', "/");
         let rel = rel
             .split("coopera/")
             .last()
