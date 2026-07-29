@@ -57,7 +57,7 @@ fn m1_vertical_slice() {
     let (stdout, stderr, ok) = run_in(dir, &["init"], None);
     assert!(ok, "init failed: {stderr}");
     assert!(stdout.contains("coopera: installed"), "{stdout}");
-    assert!(dir.join("wiki/INDEX.md").exists());
+    assert!(dir.join("coopera/INDEX.md").exists());
     assert!(dir.join(".coopera/config.toml").exists());
     let settings = std::fs::read_to_string(dir.join(".claude/settings.json")).unwrap();
     assert!(settings.contains("hook session-start"), "{settings}");
@@ -81,7 +81,7 @@ fn m1_vertical_slice() {
     std::fs::create_dir_all(dir.join("src/payments")).unwrap();
     std::fs::write(dir.join("src/payments/retry.rs"), "// wip").unwrap();
     std::fs::write(
-        dir.join("wiki/decisions/001-db-unique.md"),
+        dir.join("coopera/decisions/001-db-unique.md"),
         "---\ntitle: Charge dedup via DB unique constraints\ntype: decision\nanchors: [\"src/payments/\"]\ntriggers: [idempotency]\nsummary: Use DB unique constraints instead of Redis locks for charge dedup.\nconfidence: high\n---\n\nContext and rationale here.\n",
     )
     .unwrap();
@@ -116,7 +116,7 @@ fn m1_vertical_slice() {
     let (_, _, ok) = run_in(dir, &["wiki", "lint"], None);
     assert!(ok, "lint should pass on valid pages");
     std::fs::write(
-        dir.join("wiki/concepts/bad.md"),
+        dir.join("coopera/concepts/bad.md"),
         "---\ntitle: Bad\ntype: concept\nsummary: \"\"\n---\nbody\n",
     )
     .unwrap();
@@ -126,7 +126,7 @@ fn m1_vertical_slice() {
 }
 
 /// F3 end-to-end with a stub agent standing in for `claude -p`:
-/// transcript → digest in wiki/sessions/ → decision draft → staged → queue cleared.
+/// transcript → digest in coopera/sessions/ → decision draft → staged → queue cleared.
 #[cfg(unix)]
 #[test]
 fn f3_distill_with_stub_agent() {
@@ -144,7 +144,7 @@ fn f3_distill_with_stub_agent() {
     // Seed a valid decision page so numbering is exercised, then commit
     // so head_short() has something to report.
     std::fs::write(
-        dir.join("wiki/decisions/001-db-unique.md"),
+        dir.join("coopera/decisions/001-db-unique.md"),
         "---\ntitle: Charge dedup via DB unique constraints\ntype: decision\nanchors: [\"src/payments/\"]\ntriggers: [idempotency]\nsummary: Use DB unique constraints instead of Redis locks for charge dedup.\nconfidence: high\n---\n\nContext and rationale here.\n",
     )
     .unwrap();
@@ -208,12 +208,12 @@ JSON
     );
     assert!(ok, "distill failed: {stderr}");
     assert!(
-        stderr.contains("wiki/sessions/"),
+        stderr.contains("coopera/sessions/"),
         "summary line expected: {stderr}"
     );
 
     // Digest written, redacted, with mechanical touched-files extraction.
-    let sessions: Vec<_> = std::fs::read_dir(dir.join("wiki/sessions"))
+    let sessions: Vec<_> = std::fs::read_dir(dir.join("coopera/sessions"))
         .unwrap()
         .flatten()
         .map(|e| e.path())
@@ -239,10 +239,10 @@ JSON
     assert!(!digest.contains("supersecret"), "{digest}");
 
     // Decision draft created with the next number, and the wiki still lints.
-    let page_path = dir.join("wiki/decisions/002-retry-backoff-via-db-constraints.md");
+    let page_path = dir.join("coopera/decisions/002-retry-backoff-via-db-constraints.md");
     let page = std::fs::read_to_string(&page_path).expect("draft decision page must exist");
     assert!(page.contains("confidence: draft"), "{page}");
-    assert!(page.contains("source: wiki/sessions/"), "{page}");
+    assert!(page.contains("source: coopera/sessions/"), "{page}");
     let (_, stderr, ok) = run_in(dir, &["wiki", "lint"], None);
     assert!(ok, "wiki must lint clean after distillation: {stderr}");
 
@@ -255,11 +255,11 @@ JSON
         .unwrap();
     let staged = String::from_utf8_lossy(&staged.stdout).into_owned();
     assert!(
-        staged.contains("wiki/sessions/"),
+        staged.contains("coopera/sessions/"),
         "digest must be staged: {staged}"
     );
     assert!(
-        staged.contains("wiki/decisions/002-"),
+        staged.contains("coopera/decisions/002-"),
         "draft must be staged: {staged}"
     );
 
@@ -338,7 +338,7 @@ fn m2_presence_cross_clone() {
 
     // Bob's prompt refreshes his intent (local ref) and triggers a page.
     std::fs::write(
-        b.join("wiki/concepts/idem.md"),
+        b.join("coopera/concepts/idem.md"),
         "---\ntitle: Idempotency\ntype: concept\nanchors: [\"src/\"]\ntriggers: [idempotency]\nsummary: Dedup via DB unique constraints.\nconfidence: high\n---\n\nBody.\n",
     )
     .unwrap();

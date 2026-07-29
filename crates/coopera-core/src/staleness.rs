@@ -88,9 +88,9 @@ mod tests {
 
         // Commit 1: code and the page describing it ride together.
         std::fs::create_dir_all(dir.join("src/pay")).unwrap();
-        std::fs::create_dir_all(dir.join("wiki/decisions")).unwrap();
+        std::fs::create_dir_all(dir.join("coopera/decisions")).unwrap();
         std::fs::write(dir.join("src/pay/a.rs"), "v1").unwrap();
-        std::fs::write(dir.join("wiki/decisions/dedup.md"), PAGE).unwrap();
+        std::fs::write(dir.join("coopera/decisions/dedup.md"), PAGE).unwrap();
         sh_git(dir, &["add", "-A"]);
         sh_git(dir, &["commit", "-qm", "c1"]);
 
@@ -122,7 +122,7 @@ mod tests {
 
         // Commit 3 edits the page itself → re-verified → fresh again.
         std::fs::write(
-            dir.join("wiki/decisions/dedup.md"),
+            dir.join("coopera/decisions/dedup.md"),
             PAGE.replace("Body.", "Body updated after review."),
         )
         .unwrap();
@@ -142,8 +142,8 @@ mod tests {
         sh_git(dir, &["init", "-q"]);
         sh_git(dir, &["config", "user.email", "t@t"]);
         sh_git(dir, &["config", "user.name", "T"]);
-        std::fs::create_dir_all(dir.join("wiki/decisions")).unwrap();
-        std::fs::write(dir.join("wiki/decisions/dedup.md"), PAGE).unwrap();
+        std::fs::create_dir_all(dir.join("coopera/decisions")).unwrap();
+        std::fs::write(dir.join("coopera/decisions/dedup.md"), PAGE).unwrap();
         std::fs::write(dir.join("readme.md"), "x").unwrap();
         sh_git(dir, &["add", "-A"]);
         sh_git(dir, &["commit", "-qm", "c1"]);
@@ -160,7 +160,7 @@ mod tests {
 
         // Uncommitted draft with an unknown last_verified sha: fail-open.
         std::fs::write(
-            dir.join("wiki/decisions/new.md"),
+            dir.join("coopera/decisions/new.md"),
             PAGE.replace("last_verified", "x")
                 .replace("---\ntitle", "---\nlast_verified: deadbeef\ntitle"),
         )

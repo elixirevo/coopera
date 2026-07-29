@@ -2,6 +2,11 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// The team wiki directory at the repo root. A visible, tool-owned name:
+/// hidden dirs are skipped by default agent search (ripgrep — measured), and
+/// a generic `wiki/` collides with existing repos / reads as project files.
+pub const WIKI_DIR: &str = "coopera";
+
 pub const PAGE_TYPES: [&str; 4] = ["concept", "module", "decision", "playbook"];
 pub const MAX_BODY_LINES: usize = 100;
 
@@ -74,7 +79,7 @@ pub fn load_wiki(repo_root: &Path) -> (Vec<Page>, Vec<LintIssue>) {
     let mut pages = Vec::new();
     let mut errors = Vec::new();
     for sub in ["concepts", "modules", "decisions", "playbooks"] {
-        let dir = repo_root.join("wiki").join(sub);
+        let dir = repo_root.join(WIKI_DIR).join(sub);
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };

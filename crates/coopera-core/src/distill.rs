@@ -215,7 +215,7 @@ pub fn build_prompt(excerpt: &TranscriptExcerpt, existing: &[Page], repo_root: &
   "learnings": ["a non-obvious fact learned about this codebase, one line each"],
   "wiki_pages": [
     {{"action": "create", "type": "decision|concept|module|playbook", "title": "...", "anchors": ["src/path/"], "triggers": ["keyword"], "summary": "1-3 lines", "body": "markdown, <=40 lines"}},
-    {{"action": "update", "path": "wiki/decisions/001-example.md", "summary": "replacement 1-3 line summary (optional)", "append_body": "markdown to append (optional)"}}
+    {{"action": "update", "path": "coopera/decisions/001-example.md", "summary": "replacement 1-3 line summary (optional)", "append_body": "markdown to append (optional)"}}
   ]
 }}
 
@@ -282,9 +282,9 @@ fn apply_draft(
 
 fn apply_update(repo_root: &Path, draft: &PageDraft, source_rel: &str) -> Result<Option<String>> {
     let rel = draft.path.trim();
-    // The path comes from LLM output — never let it escape wiki/.
-    if !rel.starts_with("wiki/") || rel.contains("..") {
-        bail!("update path must be under wiki/ (got '{rel}')");
+    // The path comes from LLM output — never let it escape coopera/.
+    if !rel.starts_with("coopera/") || rel.contains("..") {
+        bail!("update path must be under coopera/ (got '{rel}')");
     }
     let abs = repo_root.join(rel);
     let content =
@@ -344,7 +344,7 @@ fn apply_create(
     let body = clamp_lines(redact(draft.body.trim()), MAX_DRAFT_BODY_LINES);
 
     let dir_name = format!("{}s", front.page_type);
-    let dir = repo_root.join("wiki").join(&dir_name);
+    let dir = repo_root.join(wiki::WIKI_DIR).join(&dir_name);
     std::fs::create_dir_all(&dir)?;
     let slug = slugify(&front.title);
     let file_name = if front.page_type == "decision" {
@@ -374,7 +374,7 @@ fn apply_create(
         );
     }
     std::fs::write(&abs, rendered)?;
-    Ok(Some(format!("wiki/{dir_name}/{file_name}")))
+    Ok(Some(format!("coopera/{dir_name}/{file_name}")))
 }
 
 /// Derive anchors from the touched surface: unique parent directories.
@@ -476,7 +476,7 @@ mod tests {
     #[test]
     fn create_draft_materializes_numbered_lintable_decision() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("wiki/decisions");
+        let dir = tmp.path().join("coopera/decisions");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("001-existing.md"), "seed").unwrap();
 
@@ -495,13 +495,13 @@ mod tests {
             tmp.path(),
             &drafts,
             &touched,
-            "wiki/sessions/x.md",
+            "coopera/sessions/x.md",
             Some("abc1234"),
         );
         assert_eq!(m.skipped, Vec::<String>::new());
         assert_eq!(
             m.written,
-            vec!["wiki/decisions/002-retry-backoff-via-db-constraints.md"]
+            vec!["coopera/decisions/002-retry-backoff-via-db-constraints.md"]
         );
 
         let content = std::fs::read_to_string(tmp.path().join(&m.written[0])).unwrap();
@@ -524,7 +524,7 @@ mod tests {
     #[test]
     fn update_draft_appends_and_demotes_confidence() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("wiki/concepts");
+        let dir = tmp.path().join("coopera/concepts");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("idem.md"),
@@ -534,12 +534,12 @@ mod tests {
 
         let drafts = vec![PageDraft {
             action: "update".into(),
-            path: "wiki/concepts/idem.md".into(),
+            path: "coopera/concepts/idem.md".into(),
             append_body: "New insight from the session.".into(),
             ..Default::default()
         }];
-        let m = materialize_pages(tmp.path(), &drafts, &[], "wiki/sessions/x.md", None);
-        assert_eq!(m.written, vec!["wiki/concepts/idem.md"]);
+        let m = materialize_pages(tmp.path(), &drafts, &[], "coopera/sessions/x.md", None);
+        assert_eq!(m.written, vec!["coopera/concepts/idem.md"]);
         let content = std::fs::read_to_string(dir.join("idem.md")).unwrap();
         assert!(content.contains("Session update"));
         assert!(content.contains("New insight"));
@@ -555,7 +555,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let drafts = vec![PageDraft {
             action: "update".into(),
-            path: "wiki/../Cargo.toml".into(),
+            path: "coopera/../Cargo.toml".into(),
             append_body: "x".into(),
             ..Default::default()
         }];

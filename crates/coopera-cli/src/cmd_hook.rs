@@ -204,9 +204,9 @@ fn trigger_context(git: &Git, prompt: &str) -> (String, usize) {
         }
         let rel = page.path.to_string_lossy();
         let rel = rel
-            .split("wiki/")
+            .split("coopera/")
             .last()
-            .map(|s| format!("wiki/{s}"))
+            .map(|s| format!("coopera/{s}"))
             .unwrap_or_else(|| rel.to_string());
         let marker = if page.front.confidence == "draft" {
             " [unreviewed]"

@@ -11,10 +11,10 @@ const MARKER_END: &str = "<!-- coopera:end -->";
 const AGENT_SECTION: &str = "\
 ## Team context (coopera)\n\
 This repository uses coopera, a harness that shares team context between AI coding sessions.\n\
-- Shared team knowledge lives in `wiki/` (concepts, modules, decisions, playbooks). Read `wiki/INDEX.md` first; do not bulk-read the whole wiki directory.\n\
+- Shared team knowledge lives in `coopera/` (concepts, modules, decisions, playbooks). Read `coopera/INDEX.md` first; do not bulk-read the whole wiki directory.\n\
 - Before planning or making design decisions, consult the injected team context and relevant wiki pages. Avoid conflicting with or duplicating in-flight teammate work; align with recorded team decisions.\n\
-- Session digests are written to `wiki/sessions/` automatically; wiki changes ride along with your code PR for human review.\n\
-- If your tool does not run coopera hooks (e.g. Antigravity), start each task by reading `.coopera/cache/presence.md` (teammate activity map) and `wiki/INDEX.md`.\n";
+- Session digests are written to `coopera/sessions/` automatically; wiki changes ride along with your code PR for human review.\n\
+- If your tool does not run coopera hooks (e.g. Antigravity), start each task by reading `.coopera/cache/presence.md` (teammate activity map) and `coopera/INDEX.md`.\n";
 
 const CONFIG_TEMPLATE: &str = "\
 # coopera configuration (defaults shown; all values optional)\n\
@@ -40,14 +40,14 @@ const SAMPLE_PAGE: &str = "\
 ---\n\
 title: Using coopera\n\
 type: playbook\n\
-anchors: [\"wiki/\"]\n\
+anchors: [\"coopera/INDEX.md\"]\n\
 triggers: [coopera, wiki]\n\
 summary: This repo shares team context via coopera — wiki pages are promoted by PR review; session digests are automatic.\n\
 confidence: high\n\
 ---\n\n\
 coopera injects team context at session start and distills sessions into\n\
 digests when they end. You never need to run it manually. To add durable\n\
-team knowledge directly, create a page in the matching wiki/ directory and\n\
+team knowledge directly, create a page in the matching coopera/ directory and\n\
 open a PR. Run `coopera wiki lint` (or let CI do it) before merging.\n";
 
 pub fn run() -> i32 {
@@ -70,17 +70,17 @@ fn install() -> Result<String> {
     let root = git.root.clone();
     let mut actions: Vec<String> = Vec::new();
 
-    // 1) wiki/ scaffold
+    // 1) coopera/ scaffold
     for sub in ["concepts", "modules", "decisions", "playbooks", "sessions"] {
-        let dir = root.join("wiki").join(sub);
+        let dir = root.join(coopera_core::wiki::WIKI_DIR).join(sub);
         if !dir.exists() {
             std::fs::create_dir_all(&dir)?;
-            actions.push(format!("created wiki/{sub}/"));
+            actions.push(format!("created coopera/{sub}/"));
         }
     }
-    write_if_absent(&root.join("wiki/INDEX.md"), INDEX_TEMPLATE, &mut actions)?;
+    write_if_absent(&root.join("coopera/INDEX.md"), INDEX_TEMPLATE, &mut actions)?;
     write_if_absent(
-        &root.join("wiki/playbooks/using-coopera.md"),
+        &root.join("coopera/playbooks/using-coopera.md"),
         SAMPLE_PAGE,
         &mut actions,
     )?;

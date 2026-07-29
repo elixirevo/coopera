@@ -1,5 +1,5 @@
 //! F3 — distillation orchestration: transcript → user's own agent (headless)
-//! → fixed-schema digest in wiki/sessions/ → wiki drafts staged on the
+//! → fixed-schema digest in coopera/sessions/ → wiki drafts staged on the
 //! working branch. Fail-open: failures leave the transcript in the retro
 //! queue (`.coopera/cache/undistilled.log`) and never fail the caller.
 
@@ -93,7 +93,7 @@ fn run_retro(git: &Git) -> i32 {
 }
 
 /// Recent Claude Code transcripts for this repo that have no matching digest
-/// in wiki/sessions/. Digest filenames end in the 8-char session prefix, so
+/// in coopera/sessions/. Digest filenames end in the 8-char session prefix, so
 /// matching is mechanical. Tiny transcripts are skipped (below substance).
 fn scan_undistilled(git: &Git, max: usize) -> Vec<PathBuf> {
     let Some(home) = std::env::var_os("HOME") else {
@@ -108,7 +108,7 @@ fn scan_undistilled(git: &Git, max: usize) -> Vec<PathBuf> {
     let store = PathBuf::from(home).join(".claude/projects").join(slug);
 
     let mut have: std::collections::HashSet<String> = std::collections::HashSet::new();
-    if let Ok(entries) = std::fs::read_dir(git.root.join("wiki/sessions")) {
+    if let Ok(entries) = std::fs::read_dir(git.root.join("coopera/sessions")) {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
             if let Some(sid) = name.strip_suffix(".md").and_then(|n| n.rsplit('-').next()) {
@@ -194,7 +194,7 @@ fn distill_one(git: &Git, transcript_path: &Path, session: Option<&str>) -> Resu
         learnings: resp.learnings.clone(),
         touched: excerpt.touched.clone(),
     };
-    let digest_rel = format!("wiki/sessions/{stamp}-{short}.md");
+    let digest_rel = format!("coopera/sessions/{stamp}-{short}.md");
     let digest_abs = git.root.join(&digest_rel);
     if let Some(parent) = digest_abs.parent() {
         std::fs::create_dir_all(parent)?;

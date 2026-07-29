@@ -7,7 +7,7 @@ use std::path::PathBuf;
 /// activity map + instruction produced full compliance even on the weakest model.
 pub const GUIDANCE: &str = "Before planning or making design decisions, review the team context above. \
 Avoid conflicting with or duplicating in-flight teammate work, and align with recorded team decisions. \
-For details read the referenced wiki pages (start from wiki/INDEX.md; do not bulk-read the whole wiki).";
+For details read the referenced wiki pages (start from coopera/INDEX.md; do not bulk-read the whole wiki).";
 
 #[derive(Debug)]
 pub struct InjectionPack {
@@ -59,9 +59,9 @@ fn score(page: &Page, branch: &str, changed: &[String]) -> i64 {
 
 fn rel_path(page: &Page) -> String {
     let rel = page.path.to_string_lossy();
-    rel.split("wiki/")
+    rel.split("coopera/")
         .last()
-        .map(|s| format!("wiki/{s}"))
+        .map(|s| format!("coopera/{s}"))
         .unwrap_or_else(|| rel.to_string())
 }
 
@@ -167,7 +167,7 @@ pub fn build_pack(
             text.push_str("\n\n");
         }
         if !lines.is_empty() || !stale_note.is_empty() {
-            text.push_str("## Team knowledge (wiki/)\n");
+            text.push_str("## Team knowledge (coopera/)\n");
             if lines.is_empty() {
                 text.push_str("(no fresh pages)");
             } else {
@@ -213,7 +213,7 @@ mod tests {
         let src = format!(
             "---\ntitle: {name}\ntype: {ptype}\nanchors: [{anchors}]\nsummary: {summary}\nconfidence: high\n---\nbody"
         );
-        parse_page(Path::new(&format!("wiki/{ptype}s/{name}.md")), &src).unwrap()
+        parse_page(Path::new(&format!("coopera/{ptype}s/{name}.md")), &src).unwrap()
     }
 
     fn no_stale() -> HashSet<PathBuf> {
@@ -315,7 +315,7 @@ mod tests {
             pack.text
         );
         assert!(
-            pack.text.contains("Stale") && pack.text.contains("wiki/decisions/old-decision.md"),
+            pack.text.contains("Stale") && pack.text.contains("coopera/decisions/old-decision.md"),
             "stale page must be pointed at: {}",
             pack.text
         );
@@ -329,7 +329,7 @@ mod tests {
         assert_eq!(pack.items, 0);
         assert_eq!(pack.stale, 1);
         assert!(pack.text.contains("(no fresh pages)"));
-        assert!(pack.text.contains("wiki/concepts/only.md"));
+        assert!(pack.text.contains("coopera/concepts/only.md"));
     }
 
     #[test]
