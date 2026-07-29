@@ -202,8 +202,20 @@ impl Git {
             .run_with_stdin(&["mktree"], &format!("100644 blob {blob}\t{file_name}\n"))?
             .trim()
             .to_string();
+        // Plumbing commits carry no meaningful authorship (the file content
+        // names the user) — pin a fixed identity so publishing works on
+        // machines/CI without git identity configured.
         let commit = self
-            .run(&["commit-tree", &tree, "-m", message])?
+            .run(&[
+                "-c",
+                "user.name=coopera",
+                "-c",
+                "user.email=presence@coopera.local",
+                "commit-tree",
+                &tree,
+                "-m",
+                message,
+            ])?
             .trim()
             .to_string();
         self.run(&["update-ref", refname, &commit])?;
