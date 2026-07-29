@@ -40,7 +40,7 @@ echo '{}' | cargo run -p coopera-cli -- hook session-start
 
 ### 구현 중 검증 항목 (PRD 미해결)
 
-- [ ] **증류 품질 실전 판정** — 이 리포에 `coopera init` 실행(self-hosting 시작) → 실개발 세션 1회 → 생성된 위키 diff를 사용자가 직접 리뷰 = M1 완성 기준
+- [x] **증류 품질 실전 판정 — 통과 (2026-07-29, M1 완료)**: self-hosting 상태에서 실개발 세션(3.7MB 트랜스크립트) 증류 → 결정 5·학습 7·위키 초안 3장 전부 린트 통과 → 사용자가 diff 리뷰 후 승인, 페이지별 원자 커밋으로 반영. 후속 개선 후보: touched 목록의 리포 밖 절대경로 필터링
 - [x] Claude Code SessionEnd 훅의 transcript_path 실제 형식 — 확인 완료(`~/.claude/projects/<경로-슬러그>/<session-id>.jsonl`, user content는 문자열/블록 배열 혼재, assistant는 thinking/text/tool_use)
 - [ ] (M2) Codex PreToolUse가 apply_patch에도 발화하는지
 
