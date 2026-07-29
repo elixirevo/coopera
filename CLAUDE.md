@@ -51,3 +51,11 @@ echo '{}' | cargo run -p coopera-cli -- hook session-start
 - 도구가 생성하는 모든 텍스트는 영어. 프로젝트 문서는 한국어.
 - 계획·문서에 기간/주차 금지 — 순서(단계)만.
 - 커밋: conventional commits, 메시지에 검증 상태 표기.
+
+<!-- coopera:begin -->
+## Team context (coopera)
+This repository uses coopera, a harness that shares team context between AI coding sessions.
+- Shared team knowledge lives in `wiki/` (concepts, modules, decisions, playbooks). Read `wiki/INDEX.md` first; do not bulk-read the whole wiki directory.
+- Before planning or making design decisions, consult the injected team context and relevant wiki pages. Avoid conflicting with or duplicating in-flight teammate work; align with recorded team decisions.
+- Session digests are written to `wiki/sessions/` automatically; wiki changes ride along with your code PR for human review.
+<!-- coopera:end -->

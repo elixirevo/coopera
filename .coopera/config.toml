@@ -1,0 +1,7 @@
+# coopera configuration (defaults shown; all values optional)
+[budget]
+# Hard token caps for the injection pack (00-harness §2.4)
+total = 1500
+presence = 300
+wiki = 800
+instructions = 200

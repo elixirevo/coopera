@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "command": "\"/Users/elixir/dev/project/elixirevo/coopera/target/release/coopera\" hook session-end",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "\"/Users/elixir/dev/project/elixirevo/coopera/target/release/coopera\" hook session-start",
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  }
+}
