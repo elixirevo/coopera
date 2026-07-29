@@ -1,7 +1,6 @@
 name: ci
+# PR verification only — pushes to main are tested by the release workflow.
 on:
-  push:
-    branches: [main]
   pull_request:
 
 jobs:

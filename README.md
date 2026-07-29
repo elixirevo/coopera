@@ -12,12 +12,18 @@ Status: pre-release, M1 in progress (internal dogfooding).
 
 ## Install (no Rust required)
 
-Download the binary for your platform from GitHub Releases and put it on PATH:
+Prebuilt binaries: `coopera-aarch64-apple-darwin` (Apple Silicon),
+`coopera-x86_64-apple-darwin` (Intel Mac), `coopera-x86_64-unknown-linux-gnu`.
+
+Rolling build (updated on every push to main):
 
 ```bash
-gh release download -R elixirevo/coopera -p "coopera-$(uname -m | sed s/arm64/aarch64/)-apple-darwin.tar.gz"
-tar -xzf coopera-*.tar.gz && mv coopera ~/.local/bin/  # or anywhere on PATH
+curl -fsSL -o coopera.tar.gz "https://github.com/elixirevo/coopera/releases/download/latest/coopera-$(uname -m | sed s/arm64/aarch64/)-apple-darwin.tar.gz"
+tar -xzf coopera.tar.gz && mv coopera ~/.local/bin/  # or anywhere on PATH
 ```
+
+Pinned stable build: replace `download/latest` with `download/v0.1.0`
+(or use `releases/latest/download/...`, which resolves to the newest version tag).
 
 Hooks committed in a coopera-enabled repo find `coopera` on PATH automatically;
 without it you still get read-only mode (wiki guidance + push tracking).

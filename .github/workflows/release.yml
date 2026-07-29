@@ -1,24 +1,58 @@
 name: release
+# Every push to main ships a rolling "latest" release (gated on tests);
+# pushing a v* tag ships a pinned versioned release.
 on:
   push:
+    branches: [main]
     tags: ["v*"]
 
 permissions:
   contents: write
 
 jobs:
-  create-release:
+  test:
     runs-on: ubuntu-latest
     steps:
-      - name: Create release for tag
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Format check
+        run: cargo fmt --check
+      - name: Test
+        run: cargo test --workspace
+
+  prepare:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      channel: ${{ steps.ch.outputs.channel }}
+    steps:
+      - id: ch
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" \
-            --title "coopera $GITHUB_REF_NAME" --generate-notes || true
+          set -e
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            CHANNEL="$GITHUB_REF_NAME"
+            gh release create "$CHANNEL" -R "$GITHUB_REPOSITORY" \
+              --title "coopera $CHANNEL" --generate-notes || true
+          else
+            CHANNEL=latest
+            # Move the rolling tag to this commit (API pushes with the Actions
+            # token do not re-trigger workflows), then create/refresh the release.
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/latest" \
+              -f "sha=$GITHUB_SHA" -F force=true \
+              || gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
+                   -f "ref=refs/tags/latest" -f "sha=$GITHUB_SHA"
+            gh release create latest -R "$GITHUB_REPOSITORY" --prerelease \
+              --title "coopera latest (rolling)" --notes "placeholder" || true
+            gh release edit latest -R "$GITHUB_REPOSITORY" \
+              --notes "Rolling build from main @ ${GITHUB_SHA::7} — updated on every push. For a pinned build use a versioned release."
+          fi
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
 
   build:
-    needs: create-release
+    needs: prepare
     strategy:
       matrix:
         include:
@@ -46,5 +80,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "$GITHUB_REF_NAME" "coopera-${{ matrix.target }}.tar.gz" \
-            -R "$GITHUB_REPOSITORY" --clobber
+          gh release upload "${{ needs.prepare.outputs.channel }}" \
+            "coopera-${{ matrix.target }}.tar.gz" -R "$GITHUB_REPOSITORY" --clobber
