@@ -1,17 +1,16 @@
-
 # --- coopera hooks (managed) ---
+# Keep this block last in the file; init regenerates it.
 [[hooks.SessionStart]]
 [[hooks.SessionStart.hooks]]
 type = "command"
-command = "COOPERA_TOOL=codex \"/Users/elixir/dev/project/elixirevo/coopera/target/release/coopera\" hook session-start"
+command = 'c="/Users/elixir/dev/project/elixirevo/coopera/target/release/coopera"; [ -x "$c" ] || c="$(command -v coopera)"; [ -x "$c" ] && COOPERA_TOOL=codex "$c" hook session-start || echo {}'
 
 [[hooks.UserPromptSubmit]]
 [[hooks.UserPromptSubmit.hooks]]
 type = "command"
-command = "COOPERA_TOOL=codex \"/Users/elixir/dev/project/elixirevo/coopera/target/release/coopera\" hook user-prompt-submit"
+command = 'c="/Users/elixir/dev/project/elixirevo/coopera/target/release/coopera"; [ -x "$c" ] || c="$(command -v coopera)"; [ -x "$c" ] && COOPERA_TOOL=codex "$c" hook user-prompt-submit || echo {}'
 
 [[hooks.SessionEnd]]
 [[hooks.SessionEnd.hooks]]
 type = "command"
-command = "COOPERA_TOOL=codex \"/Users/elixir/dev/project/elixirevo/coopera/target/release/coopera\" hook session-end"
-
+command = 'c="/Users/elixir/dev/project/elixirevo/coopera/target/release/coopera"; [ -x "$c" ] || c="$(command -v coopera)"; [ -x "$c" ] && COOPERA_TOOL=codex "$c" hook session-end || echo {}'
