@@ -42,7 +42,16 @@ echo '{}' | cargo run -p coopera-cli -- hook session-start
 
 - [x] **증류 품질 실전 판정 — 통과 (2026-07-29, M1 완료)**: self-hosting 상태에서 실개발 세션(3.7MB 트랜스크립트) 증류 → 결정 5·학습 7·위키 초안 3장 전부 린트 통과 → 사용자가 diff 리뷰 후 승인, 페이지별 원자 커밋으로 반영. 후속 개선 후보: touched 목록의 리포 밖 절대경로 필터링
 - [x] Claude Code SessionEnd 훅의 transcript_path 실제 형식 — 확인 완료(`~/.claude/projects/<경로-슬러그>/<session-id>.jsonl`, user content는 문자열/블록 배열 혼재, assistant는 thinking/text/tool_use)
-- [ ] (M2) Codex PreToolUse가 apply_patch에도 발화하는지
+- [x] (M2) Codex PreToolUse가 apply_patch에도 발화하는지 — **확인 완료** (2026-07-29, M2 데모에서 `"tool_name":"apply_patch"` 실측; 2026-04의 Bash-only 보고는 구버전)
+
+## M2 체크리스트 (PRD 수용 기준) — 완료 2026-07-29
+
+- [x] F5 presence 발행/조회: 세션 단위 ref(`refs/coopera/presence/<user>/<session>`), SessionStart fetch(`--prune`+브랜치 헤드, 2초 타임아웃)→`.coopera/cache/presence.md` 물질화, 세션 경계는 동기 push·프롬프트는 백그라운드 push, SessionEnd 정리(원격 삭제) — bare-origin 2클론 e2e 통과
+- [x] F6 UserPromptSubmit: intent 갱신(레드액션·120자) + triggers 매칭 페이지 주입(최대 3, [unreviewed] 마커, 지연 예산 위해 staleness 생략) — e2e 통과
+- [x] F7 활성 브랜치 요약: 최근 14일 원격 브랜치(기본 브랜치 제외, 최대 5)를 활동 지도에 통합 — push 축 1급 신호
+- [x] F8 Codex 어댑터: init이 `.codex/config.toml` `[[hooks.*]]` 3종 생성(`COOPERA_TOOL=codex`) — **크로스툴 데모 통과**: Codex가 주입된 팀 결정(git refs presence)과 안티-서베일런스 원칙대로 계획 수립, 서버 제안 0. 전제: 프로젝트 trust + `/hooks` 훅 승인 1회
+- [x] F9 Antigravity 읽기 경로: AGENTS.md hook-less 지침(presence.md·INDEX 읽기) + `--retro` 확장(트랜스크립트 저장소 스캔 — 다이제스트 없는 최근 세션 최대 3건, 16KB 문턱)
+- 라이브 검증 보너스: M2 작업 중 병렬 실세션이 종료되며 **자동 증류가 무인으로 작동** — 결정 4페이지(003~006) 스테이징됨
 
 ## 컨벤션
 
@@ -58,4 +67,5 @@ This repository uses coopera, a harness that shares team context between AI codi
 - Shared team knowledge lives in `wiki/` (concepts, modules, decisions, playbooks). Read `wiki/INDEX.md` first; do not bulk-read the whole wiki directory.
 - Before planning or making design decisions, consult the injected team context and relevant wiki pages. Avoid conflicting with or duplicating in-flight teammate work; align with recorded team decisions.
 - Session digests are written to `wiki/sessions/` automatically; wiki changes ride along with your code PR for human review.
+- If your tool does not run coopera hooks (e.g. Antigravity), start each task by reading `.coopera/cache/presence.md` (teammate activity map) and `wiki/INDEX.md`.
 <!-- coopera:end -->
