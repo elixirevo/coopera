@@ -10,7 +10,19 @@ it manually.
 
 Status: pre-release, M1 in progress (internal dogfooding).
 
-## Build & test
+## Install (no Rust required)
+
+Download the binary for your platform from GitHub Releases and put it on PATH:
+
+```bash
+gh release download -R elixirevo/coopera -p "coopera-$(uname -m | sed s/arm64/aarch64/)-apple-darwin.tar.gz"
+tar -xzf coopera-*.tar.gz && mv coopera ~/.local/bin/  # or anywhere on PATH
+```
+
+Hooks committed in a coopera-enabled repo find `coopera` on PATH automatically;
+without it you still get read-only mode (wiki guidance + push tracking).
+
+## Build & test (from source)
 
 ```bash
 cargo build
