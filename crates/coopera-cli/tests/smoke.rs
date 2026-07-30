@@ -65,6 +65,24 @@ fn m1_vertical_slice() {
     let codex = std::fs::read_to_string(dir.join(".codex/config.toml")).unwrap();
     assert!(codex.contains("[[hooks.SessionStart]]"), "{codex}");
     assert!(codex.contains("COOPERA_TOOL=codex"), "{codex}");
+
+    // Committed hook config must stay machine-independent: no absolute paths
+    // (the installer's home dir would be wrong on every teammate's machine).
+    let installer = bin();
+    for (name, content) in [("settings.json", &settings), ("config.toml", &codex)] {
+        assert!(
+            !content.contains(installer),
+            "{name} must not bake in the installer path: {content}"
+        );
+        assert!(
+            !content.contains("/Users/") && !content.contains("/home/"),
+            "{name} must not contain absolute home paths: {content}"
+        );
+        assert!(
+            content.contains("${COOPERA_BIN:-coopera}"),
+            "{name} must resolve the binary from PATH/COOPERA_BIN: {content}"
+        );
+    }
     assert!(std::fs::read_to_string(dir.join("AGENTS.md"))
         .unwrap()
         .contains("coopera"));

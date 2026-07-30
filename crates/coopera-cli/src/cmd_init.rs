@@ -103,14 +103,24 @@ fn install() -> Result<String> {
         upsert_marker_block(&root.join(file), &mut actions)?;
     }
 
-    if actions.is_empty() {
-        Ok("coopera: already installed (nothing to do)".to_string())
+    let mut out = if actions.is_empty() {
+        "coopera: already installed (nothing to do)".to_string()
     } else {
-        Ok(format!(
-            "coopera: installed\n  - {}",
-            actions.join("\n  - ")
-        ))
+        format!("coopera: installed\n  - {}", actions.join("\n  - "))
+    };
+    // Committed hooks call `coopera` from PATH; say so when it is not reachable
+    // (otherwise the hooks would silently no-op on this machine).
+    if !on_path() {
+        let exe = std::env::current_exe()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| "<path-to-coopera>".to_string());
+        out.push_str(&format!(
+            "\n\nnote: no 'coopera' on PATH — hooks will do nothing on this machine.\n\
+             Install it on PATH, or export the override in your shell profile:\n\
+             \n    export COOPERA_BIN=\"{exe}\"\n"
+        ));
     }
+    Ok(out)
 }
 
 fn write_if_absent(path: &Path, content: &str, actions: &mut Vec<String>) -> Result<()> {
@@ -143,26 +153,37 @@ fn ensure_gitignore_line(root: &Path, line: &str, actions: &mut Vec<String>) -> 
     Ok(())
 }
 
-/// Hook command with graceful degradation: try the installer's absolute
-/// binary path, fall back to `coopera` on PATH, and if neither exists emit a
-/// valid empty hook reply. Teammates who cloned but did not install coopera
-/// get read-only mode (AGENTS.md-compiled guidance) with zero error noise —
-/// the partial-adoption contract (01-idea-brief).
-fn guarded_command(exe: &str, tool: &str, sub: &str) -> String {
-    // Forward slashes keep the command valid for bash on Windows too
-    // (Claude Code runs hook commands through Git Bash there).
-    let exe = exe.replace('\\', "/");
+/// Hook command written into COMMITTED config. It must be machine-independent:
+/// the installer's own path would be meaningless (and wrong) on every teammate's
+/// machine. Resolution order is `$COOPERA_BIN` (per-machine override for
+/// binaries outside PATH, e.g. a local `target/release` build) then `coopera`
+/// on PATH; when neither resolves the hook emits a valid empty reply, so
+/// teammates who cloned without installing get read-only mode with zero error
+/// noise — the partial-adoption contract (01-idea-brief).
+fn guarded_command(tool: &str, sub: &str) -> String {
     format!(
-        "c=\"{exe}\"; [ -x \"$c\" ] || c=\"$(command -v coopera)\"; [ -x \"$c\" ] && COOPERA_TOOL={tool} \"$c\" hook {sub} || echo {{}}"
+        "c=\"${{COOPERA_BIN:-coopera}}\"; command -v \"$c\" >/dev/null 2>&1 && COOPERA_TOOL={tool} \"$c\" hook {sub} || echo {{}}"
     )
+}
+
+/// Is a `coopera` executable reachable on PATH? Drives the post-install hint
+/// (we never bake a path into committed files, so the user must either install
+/// on PATH or export COOPERA_BIN).
+fn on_path() -> bool {
+    let name = if cfg!(windows) {
+        "coopera.exe"
+    } else {
+        "coopera"
+    };
+    std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()))
+        .unwrap_or(false)
 }
 
 /// Merge coopera hooks into .claude/settings.json, preserving everything
 /// else. Our entries are rebuilt each run (upgrades replace old formats);
 /// the file is only written when the parsed value actually changes.
 fn install_claude_hooks(root: &Path, actions: &mut Vec<String>) -> Result<()> {
-    let exe = std::env::current_exe().context("cannot resolve coopera binary path")?;
-    let exe = exe.to_string_lossy();
     let path = root.join(".claude/settings.json");
     let original: serde_json::Value = match std::fs::read_to_string(&path) {
         Ok(s) => serde_json::from_str(&s).context(".claude/settings.json is not valid JSON")?,
@@ -175,7 +196,7 @@ fn install_claude_hooks(root: &Path, actions: &mut Vec<String>) -> Result<()> {
         ("UserPromptSubmit", "user-prompt-submit"),
         ("SessionEnd", "session-end"),
     ] {
-        let command = guarded_command(&exe, "claude-code", sub);
+        let command = guarded_command("claude-code", sub);
         let hooks = settings
             .as_object_mut()
             .context("settings.json root must be an object")?
@@ -213,8 +234,6 @@ const CODEX_MARKER: &str = "# --- coopera hooks (managed) ---";
 /// command. Note: the project must be trusted in Codex and the hook
 /// definitions approved once via `/hooks`.
 fn install_codex_hooks(root: &Path, actions: &mut Vec<String>) -> Result<()> {
-    let exe = std::env::current_exe().context("cannot resolve coopera binary path")?;
-    let exe = exe.to_string_lossy();
     let path = root.join(".codex/config.toml");
     let current = std::fs::read_to_string(&path).unwrap_or_default();
     let prefix = match current.find(CODEX_MARKER) {
@@ -229,7 +248,7 @@ fn install_codex_hooks(root: &Path, actions: &mut Vec<String>) -> Result<()> {
         ("UserPromptSubmit", "user-prompt-submit"),
         ("SessionEnd", "session-end"),
     ] {
-        let command = guarded_command(&exe, "codex", sub);
+        let command = guarded_command("codex", sub);
         block.push_str(&format!(
             "[[hooks.{event}]]\n[[hooks.{event}.hooks]]\ntype = \"command\"\ncommand = '{command}'\n\n"
         ));
