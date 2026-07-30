@@ -4,7 +4,7 @@
       {
         "hooks": [
           {
-            "command": "c=\"/Users/elixir/dev/project/elixirevo/coopera/target/release/coopera\"; [ -x \"$c\" ] || c=\"$(command -v coopera)\"; [ -x \"$c\" ] && COOPERA_TOOL=claude-code \"$c\" hook session-end || echo {}",
+            "command": "c=\"${COOPERA_BIN:-coopera}\"; command -v \"$c\" >/dev/null 2>&1 && COOPERA_TOOL=claude-code \"$c\" hook session-end || echo {}",
             "type": "command"
           }
         ]
@@ -14,7 +14,7 @@
       {
         "hooks": [
           {
-            "command": "c=\"/Users/elixir/dev/project/elixirevo/coopera/target/release/coopera\"; [ -x \"$c\" ] || c=\"$(command -v coopera)\"; [ -x \"$c\" ] && COOPERA_TOOL=claude-code \"$c\" hook session-start || echo {}",
+            "command": "c=\"${COOPERA_BIN:-coopera}\"; command -v \"$c\" >/dev/null 2>&1 && COOPERA_TOOL=claude-code \"$c\" hook session-start || echo {}",
             "type": "command"
           }
         ]
@@ -24,7 +24,7 @@
       {
         "hooks": [
           {
-            "command": "c=\"/Users/elixir/dev/project/elixirevo/coopera/target/release/coopera\"; [ -x \"$c\" ] || c=\"$(command -v coopera)\"; [ -x \"$c\" ] && COOPERA_TOOL=claude-code \"$c\" hook user-prompt-submit || echo {}",
+            "command": "c=\"${COOPERA_BIN:-coopera}\"; command -v \"$c\" >/dev/null 2>&1 && COOPERA_TOOL=claude-code \"$c\" hook user-prompt-submit || echo {}",
             "type": "command"
           }
         ]

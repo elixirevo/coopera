@@ -36,8 +36,16 @@ integration on a real Windows machine is still to be verified.
 Pinned stable build: replace `download/latest` with `download/v0.1.0`
 (or use `releases/latest/download/...`, which resolves to the newest version tag).
 
-Hooks committed in a coopera-enabled repo find `coopera` on PATH automatically;
-without it you still get read-only mode (wiki guidance + push tracking).
+Hooks committed in a coopera-enabled repo call `coopera` from PATH, so the
+committed config stays machine-independent. Without the binary you still get
+read-only mode (wiki guidance + push tracking) and no error noise.
+
+If your binary lives outside PATH (e.g. a local `cargo build --release`),
+point at it from your shell profile instead of editing committed files:
+
+```bash
+export COOPERA_BIN="$HOME/dev/coopera/target/release/coopera"
+```
 
 ## Build & test (from source)
 

@@ -60,6 +60,8 @@ echo '{}' | cargo run -p coopera-cli -- hook session-start
 - 도구가 생성하는 모든 텍스트는 영어. 프로젝트 문서는 한국어.
 - 계획·문서에 기간/주차 금지 — 순서(단계)만.
 - 커밋: conventional commits, 메시지에 검증 상태 표기.
+- **커밋되는 설정에 머신 고유 경로 금지**: 훅 명령은 `${COOPERA_BIN:-coopera}`로 PATH를 경유한다(스모크 테스트가 절대 경로 유입을 회귀 검사). 로컬 빌드를 쓰려면 셸 프로필에 `COOPERA_BIN`을 export.
+- self-hosting 개발 루프: 코드 수정 → `cargo build --release` → `cp target/release/coopera ~/.local/bin/`(또는 `COOPERA_BIN` 지정) → 다음 세션부터 반영.
 
 <!-- coopera:begin -->
 ## Team context (coopera)
