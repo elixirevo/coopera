@@ -60,7 +60,8 @@ echo '{}' | cargo run -p coopera-cli -- hook session-start
 - [x] P0 증류 소생: spawn을 자기 프로세스 그룹으로 detach(`spawn::detach`), distiller 출력 `.coopera/cache/distill.log`(512KB 캡), session-start에 "N undistilled pending" 표시, session-start가 `distill --retro` 자동 드레인(락파일 가드·stale 30분 해제·회당 에이전트 호출 최대 3건), 타임아웃 180→600s, retro 스캔 하드닝(mtime 최신순, 활성 세션 제외 = mtime 10분/presence 30분, distiller 트랜스크립트 PROMPT_MARKER 스니핑 제외)
 - [x] P1 Codex/presence: 훅 명령에 `COOPERA_SESSION_FALLBACK="ppid-$PPID"` — 세션 키가 훅 간 안정화되어 intent 갱신·SessionEnd 정리 작동(e2e 통과; **실 Codex 세션에서 $PPID 안정성 실측은 대기**), last_seen 24h 초과 ref lazy GC(로컬 즉시 + 원격은 백그라운드 push 1회, 파싱 불가 ref는 보존)
 - [x] P2 주입/계측: stale 페이지는 제외 대신 [STALE — re-verify] 마커로 요약 주입(fresh 이후 순위, 예산 초과분만 포인터), `.coopera/cache/metrics.jsonl` 계측(inject/distill/distill_error, 1MB 로테이션, 로컬 전용 — M3 백로그 선행)
-- [ ] 후속: Codex 롤아웃(`~/.codex/sessions/…/rollout-*.jsonl`, session_meta/payload 스키마 실측 완료) 증류 경로 — 별도 추출기 필요. touched 목록의 리포 밖 절대경로 필터링(M1 이월)
+- [x] Codex 롤아웃 증류 경로 — **구현 완료** (2026-08-02): session_meta 첫 줄로 포맷 감지(`codex_meta`) → 전용 추출기 `extract_codex_rollout`(response_item만 사용 — event_msg는 스트리밍 중복, developer/reasoning/시스템 주입 패킷 스킵, apply_patch에서 touched 추출·세션 cwd로 상대경로 해석), retro 스캔이 `~/.codex/sessions/` date-키 스토어를 cwd 매칭으로 커버(가드 동일: 16KB·14d·mtime·presence·다이제스트 dedup·마커 스니핑은 128KB 헤드 — 첫 줄이 12–44KB), 다이제스트 tool="codex"·세션 id는 payload.id. 실 롤아웃(cli 0.104·0.146) 추출 검증 + 유닛 2·retro e2e 1 추가
+- [ ] 후속: touched 목록의 리포 밖 절대경로 필터링(M1 이월)
 
 ## 컨벤션
 
