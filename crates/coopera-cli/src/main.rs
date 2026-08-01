@@ -63,6 +63,10 @@ enum HookEvent {
     UserPromptSubmit,
     /// SessionEnd: presence cleanup + background distillation (F3/F5).
     SessionEnd,
+    /// PreInvocation (Antigravity): presence + first-call injection (F8b).
+    PreInvocation,
+    /// Stop (Antigravity): capture marker + presence heartbeat (F8b).
+    Stop,
 }
 
 #[derive(Subcommand)]
@@ -79,6 +83,8 @@ fn main() {
             HookEvent::SessionStart => cmd_hook::session_start(),
             HookEvent::UserPromptSubmit => cmd_hook::user_prompt_submit(),
             HookEvent::SessionEnd => cmd_hook::session_end(),
+            HookEvent::PreInvocation => cmd_hook::pre_invocation(),
+            HookEvent::Stop => cmd_hook::stop(),
         },
         Cmd::Distill {
             transcript,

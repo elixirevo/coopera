@@ -351,6 +351,96 @@ pub struct DistillResponse {
     pub wiki_pages: Vec<PageDraft>,
 }
 
+/// Detect an Antigravity transcript
+/// (`~/.gemini/<product>/brain/<id>/.system_generated/logs/transcript.jsonl`
+/// or the workspace-local path hooks report): the first JSON line carries
+/// `step_index` + `source`. Doubles as the format detector — Claude and
+/// Codex lines have neither. Shape verified against real agy 1.1.9
+/// transcripts on 2026-08-02.
+pub fn antigravity_detect(head: &str) -> bool {
+    let Some(first) = head.lines().find(|l| !l.trim().is_empty()) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(first) else {
+        return false;
+    };
+    v.get("step_index").is_some() && v.get("source").is_some()
+}
+
+/// Extract a distillable excerpt from an Antigravity transcript. USER_INPUT
+/// steps wrap the developer's actual prompt in `<USER_REQUEST>` (surrounding
+/// metadata blocks are tool chrome, not conversation); PLANNER_RESPONSE
+/// carries the model's text and tool calls. Touched files come from
+/// path-shaped tool-call arguments (agy double-quotes arg values). Tool
+/// output steps (LIST_DIRECTORY etc.) are skipped. Lenient throughout.
+pub fn extract_antigravity(jsonl: &str, repo_root: &Path) -> TranscriptExcerpt {
+    let root_canon = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf());
+    let mut out_lines: Vec<String> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+    let mut messages = 0usize;
+
+    for line in jsonl.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("");
+        match v.get("type").and_then(|t| t.as_str()) {
+            Some("USER_INPUT") => {
+                push_role_line(
+                    &mut out_lines,
+                    &mut messages,
+                    "USER",
+                    unwrap_user_request(content),
+                );
+            }
+            Some("PLANNER_RESPONSE") => {
+                push_role_line(&mut out_lines, &mut messages, "ASSISTANT", content.trim());
+                if let Some(calls) = v.get("tool_calls").and_then(|c| c.as_array()) {
+                    for call in calls {
+                        let Some(args) = call.get("args").and_then(|a| a.as_object()) else {
+                            continue;
+                        };
+                        for val in args.values() {
+                            let Some(s) = val.as_str() else { continue };
+                            let s = s.trim().trim_matches('"');
+                            if !s.starts_with('/') || s.contains('\n') {
+                                continue;
+                            }
+                            let rel = relativize(s, repo_root, &root_canon);
+                            // Outside-repo paths relativize to themselves
+                            // (still absolute) — not our surface.
+                            if !rel.starts_with('/') && !touched.contains(&rel) {
+                                touched.push(rel);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {} // history markers, tool outputs, checkpoints
+        }
+    }
+
+    TranscriptExcerpt {
+        conversation: clamp_conversation(out_lines.join("\n\n")),
+        touched,
+        messages,
+    }
+}
+
+/// The developer's actual prompt inside a USER_INPUT step — everything else
+/// in the content (ADDITIONAL_METADATA, USER_SETTINGS_CHANGE, ...) is chrome.
+pub fn unwrap_user_request(content: &str) -> &str {
+    match (
+        content.find("<USER_REQUEST>"),
+        content.find("</USER_REQUEST>"),
+    ) {
+        (Some(s), Some(e)) if e > s => content["<USER_REQUEST>".len() + s..e].trim(),
+        _ => content.trim(),
+    }
+}
+
 /// Parse the agent's reply — tolerant of preamble text and code fences.
 pub fn parse_response(raw: &str) -> Result<DistillResponse> {
     let start = raw
@@ -732,6 +822,57 @@ mod tests {
         assert!(
             !ex.conversation.contains("secret plan"),
             "reasoning must be skipped"
+        );
+    }
+
+    fn antigravity_fixture(root: &str) -> String {
+        [
+            r#"{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"<USER_REQUEST>\nMake payment retries idempotent\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-08-02.\n</ADDITIONAL_METADATA>"}"#.to_string(),
+            r#"{"step_index":1,"source":"SYSTEM","type":"CONVERSATION_HISTORY","status":"DONE"}"#.to_string(),
+            format!(
+                r#"{{"step_index":2,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"I will refactor the retry logic.","tool_calls":[{{"name":"write_to_file","args":{{"TargetFile":"\"{root}/src/payments/retry.rs\"","toolAction":"\"Writing file\""}}}}]}}"#
+            ),
+            r#"{"step_index":3,"source":"MODEL","type":"LIST_DIRECTORY","status":"DONE","content":"noise { not conversation }"}"#.to_string(),
+            r#"{"step_index":4,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"<USER_REQUEST>\nAlso add tests\n</USER_REQUEST>"}"#.to_string(),
+            r#"{"step_index":5,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"Done. We chose DB unique constraints."}"#.to_string(),
+        ]
+        .join("\n")
+    }
+
+    #[test]
+    fn antigravity_detector_and_extraction() {
+        let fixture = antigravity_fixture("/repo");
+        assert!(antigravity_detect(&fixture));
+        assert!(
+            !antigravity_detect(&fixture_jsonl("/repo")),
+            "claude format"
+        );
+        assert!(codex_meta(&fixture).is_none(), "not a codex rollout");
+
+        let ex = extract_antigravity(&fixture, Path::new("/repo"));
+        assert_eq!(ex.messages, 4);
+        assert!(ex
+            .conversation
+            .contains("USER: Make payment retries idempotent"));
+        assert!(ex.conversation.contains("ASSISTANT: I will refactor"));
+        assert!(
+            !ex.conversation.contains("ADDITIONAL_METADATA"),
+            "metadata chrome must be stripped: {}",
+            ex.conversation
+        );
+        assert!(
+            !ex.conversation.contains("noise {"),
+            "tool outputs are not conversation"
+        );
+        assert_eq!(ex.touched, vec!["src/payments/retry.rs"]);
+    }
+
+    #[test]
+    fn unwrap_user_request_falls_back_to_whole_content() {
+        assert_eq!(unwrap_user_request("plain text"), "plain text");
+        assert_eq!(
+            unwrap_user_request("<USER_REQUEST>\nhi\n</USER_REQUEST>\n<X>y</X>"),
+            "hi"
         );
     }
 

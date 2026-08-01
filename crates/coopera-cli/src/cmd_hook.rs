@@ -39,6 +39,8 @@ fn working_dir(input: &HookInput) -> PathBuf {
         .cwd
         .as_ref()
         .map(PathBuf::from)
+        // Antigravity payloads carry workspacePaths instead of cwd.
+        .or_else(|| input.workspace_paths.first().map(PathBuf::from))
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."))
 }
@@ -294,6 +296,165 @@ fn trigger_context(git: &Git, prompt: &str) -> (String, usize) {
         ),
         n,
     )
+}
+
+/// F8b — Antigravity PreInvocation: refresh this conversation's presence
+/// (key = conversationId from the payload) and, on the first model call
+/// only, inject the team-context pack as a transient system message — the
+/// agy injection channel (`injectSteps[].ephemeralMessage`). Later
+/// invocations refresh presence and reply `{}`; re-injecting every turn
+/// would spend budget on every model call.
+pub fn pre_invocation() -> i32 {
+    if std::env::var_os(DISTILL_ENV).is_some() {
+        println!("{{}}");
+        return 0;
+    }
+    let t0 = std::time::Instant::now();
+    let input = read_input();
+    let dir = working_dir(&input);
+    let first = input.invocation_num.unwrap_or(1) <= 1;
+
+    let Ok(git) = Git::discover(&dir) else {
+        println!("{{}}");
+        return 0;
+    };
+    let session = session_key(&input);
+    let now = jiff::Timestamp::now();
+    if first {
+        let _ = presence::fetch(&git, NET_TIMEOUT);
+    }
+    let user = git.user_name();
+    // PreInvocation/Stop are Antigravity-only events — the tool is a fact of
+    // the event, not of the COOPERA_TOOL env (which a bare test/manual call
+    // would lack).
+    let mut entry = presence::load(&git, &user, &session).unwrap_or_else(|| PresenceEntry {
+        user: user.clone(),
+        session: session.clone(),
+        tool: "antigravity".to_string(),
+        branch: git.current_branch(),
+        started: now.to_string(),
+        last_seen: now.to_string(),
+        intent: "session started".to_string(),
+        status: "active".to_string(),
+    });
+    entry.last_seen = now.to_string();
+    entry.branch = git.current_branch();
+    if let Some(intent) = input
+        .transcript_path
+        .as_deref()
+        .and_then(transcript_tail_intent)
+    {
+        if !intent.trim().is_empty() {
+            entry.intent = intent;
+        }
+    }
+    let sync = first; // conversation start is the moment teammates should see us
+    let _ = presence::publish(&git, &entry, sync, NET_TIMEOUT);
+    if !first {
+        println!("{{}}");
+        return 0;
+    }
+
+    let _ = presence::gc(&git, now, None);
+    let config = Config::load(&git.root);
+    let (pages, _) = wiki::load_wiki(&git.root);
+    let changed = git.changed_files();
+    let stale = staleness::find_stale(&git, &pages);
+    let entries = presence::load_all(&git);
+    let branches = git.recent_remote_branches(5);
+    let plines = presence::format_lines(&entries, &branches, now, Some(&session));
+    let _ = presence::materialize(&git.root, &plines);
+    let pack = inject::build_pack(
+        &pages,
+        &entry.branch,
+        &changed,
+        &config.budget,
+        &stale,
+        &plines,
+    );
+    if !pack.text.is_empty() {
+        coopera_core::metrics::record(
+            &git.root,
+            "inject",
+            &[
+                ("source", "pre-invocation".into()),
+                ("items", (pack.items as u64).into()),
+                ("tokens", (pack.tokens as u64).into()),
+                ("stale", (pack.stale as u64).into()),
+                ("presence_items", (pack.presence_items as u64).into()),
+                ("latency_ms", (t0.elapsed().as_millis() as u64).into()),
+            ],
+        );
+    }
+    println!(
+        "{}",
+        coopera_core::hookio::agy_pre_invocation_output(&pack.text)
+    );
+    0
+}
+
+/// F8b — Antigravity Stop: fires when a turn's execution loop ends — there
+/// is no conversation-end moment at all in Antigravity. So: mark the
+/// conversation for capture (the retro queue's quiescence guard turns
+/// per-turn signals into one distillation once the conversation goes
+/// quiet), refresh presence, and kick the background sweep.
+pub fn stop() -> i32 {
+    if std::env::var_os(DISTILL_ENV).is_some() {
+        println!("{{}}");
+        return 0;
+    }
+    let input = read_input();
+    let dir = working_dir(&input);
+    if let Ok(git) = Git::discover(&dir) {
+        let session = session_key(&input);
+        let user = git.user_name();
+        if let Some(mut entry) = presence::load(&git, &user, &session) {
+            entry.last_seen = jiff::Timestamp::now().to_string();
+            let _ = presence::publish(&git, &entry, false, NET_TIMEOUT);
+        }
+        if let Some(tp) = &input.transcript_path {
+            let substantial = std::fs::metadata(tp)
+                .map(|m| m.len() >= 16 * 1024)
+                .unwrap_or(false);
+            if substantial && !crate::cmd_distill::has_digest(&git.root, &session) {
+                // Stop is an Antigravity-only event; the tool tag drives the
+                // retro quiescence guard, so it must not depend on env.
+                crate::cmd_distill::add_pending(&git.root, tp, "antigravity", Some(&session));
+            }
+        }
+        spawn_retro(&git.root);
+    }
+    println!("{{}}");
+    0
+}
+
+/// Latest developer prompt from an Antigravity transcript — the presence
+/// intent. Reads only the final 64KB (transcripts grow unbounded); a partial
+/// first line after the seek fails JSON parse and is skipped naturally.
+fn transcript_tail_intent(path: &str) -> Option<String> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let _ = f.seek(SeekFrom::Start(len.saturating_sub(64 * 1024)));
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    let mut last: Option<String> = None;
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("USER_INPUT") {
+            continue;
+        }
+        if let Some(content) = v.get("content").and_then(|c| c.as_str()) {
+            let req = coopera_core::distill::unwrap_user_request(content);
+            if !req.is_empty() {
+                last = Some(req.to_string());
+            }
+        }
+    }
+    last.map(|l| redact(&l).replace('\n', " ").chars().take(120).collect())
 }
 
 /// Kick a detached `coopera distill --retro` whose output lands in the

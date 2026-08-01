@@ -82,10 +82,19 @@ fn m1_vertical_slice() {
         "codex hooks need a stable session key (no session id in payloads): {codex}"
     );
 
+    let agy = std::fs::read_to_string(dir.join(".agents/hooks.json")).unwrap();
+    assert!(agy.contains("\"coopera\""), "{agy}");
+    assert!(agy.contains("hook pre-invocation"), "{agy}");
+    assert!(agy.contains("COOPERA_TOOL=antigravity"), "{agy}");
+
     // Committed hook config must stay machine-independent: no absolute paths
     // (the installer's home dir would be wrong on every teammate's machine).
     let installer = bin();
-    for (name, content) in [("settings.json", &settings), ("config.toml", &codex)] {
+    for (name, content) in [
+        ("settings.json", &settings),
+        ("config.toml", &codex),
+        ("hooks.json", &agy),
+    ] {
         assert!(
             !content.contains(installer),
             "{name} must not bake in the installer path: {content}"
@@ -834,6 +843,170 @@ fn distiller_agent_follows_the_hosting_tool() {
         captured.contains("You are the distiller for coopera"),
         "agy-style agents must receive the prompt via argv: {}",
         &captured[..captured.len().min(120)]
+    );
+}
+
+fn antigravity_transcript(root: &str) -> String {
+    [
+        r#"{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"<USER_REQUEST>\nMake payment retries idempotent\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nnoise\n</ADDITIONAL_METADATA>"}"#.to_string(),
+        format!(
+            r#"{{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"I will refactor the retry logic.","tool_calls":[{{"name":"write_to_file","args":{{"TargetFile":"\"{root}/src/payments/retry.rs\""}}}}]}}"#
+        ),
+        r#"{"step_index":2,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"<USER_REQUEST>\nAlso add tests\n</USER_REQUEST>"}"#.to_string(),
+        r#"{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"Done. We chose DB unique constraints."}"#.to_string(),
+        pad_line(),
+    ]
+    .join("\n")
+}
+
+/// F8b — Antigravity adapter end to end: init merges the "coopera" named
+/// hook without touching user hooks; PreInvocation injects on the first
+/// model call only and publishes presence keyed by conversationId (intent
+/// from the transcript tail); Stop queues the rolling transcript once, the
+/// quiescence guard defers a live conversation, and retro distills it with
+/// proper attribution after it goes quiet.
+#[cfg(unix)]
+#[test]
+fn antigravity_adapter_end_to_end() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q"]);
+    git(dir, &["config", "user.email", "tester@example.com"]);
+    git(dir, &["config", "user.name", "Tester"]);
+
+    // A pre-existing user hook must survive init's merge.
+    std::fs::create_dir_all(dir.join(".agents")).unwrap();
+    std::fs::write(
+        dir.join(".agents/hooks.json"),
+        r#"{"user-lint":{"PostToolUse":[{"matcher":"run_command","hooks":[{"type":"command","command":"./lint.sh"}]}]}}"#,
+    )
+    .unwrap();
+    let (_, stderr, ok) = run_in(dir, &["init"], None);
+    assert!(ok, "init failed: {stderr}");
+    let hooks = std::fs::read_to_string(dir.join(".agents/hooks.json")).unwrap();
+    assert!(
+        hooks.contains("user-lint") && hooks.contains("\"coopera\""),
+        "init must merge, not replace: {hooks}"
+    );
+
+    std::fs::write(
+        dir.join("coopera/decisions/001-db-unique.md"),
+        "---\ntitle: Charge dedup via DB unique constraints\ntype: decision\nanchors: [\"src/payments/\"]\ntriggers: [idempotency]\nsummary: Use DB unique constraints instead of Redis locks for charge dedup.\nconfidence: high\n---\n\nContext.\n",
+    )
+    .unwrap();
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-qm", "seed"]);
+
+    let stub = dir.join("stub-agent.sh");
+    std::fs::write(
+        &stub,
+        "#!/bin/sh\ncat > /dev/null\ncat <<'JSON'\n{\"intent\":\"Antigravity session\",\"decisions\":[\"One durable decision\"],\"learnings\":[],\"wiki_pages\":[]}\nJSON\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let config_path = dir.join(".coopera/config.toml");
+    let mut config = std::fs::read_to_string(&config_path).unwrap();
+    config.push_str(&format!(
+        "\n[distill]\ncommand = \"{}\"\nargs = []\n",
+        stub.display()
+    ));
+    std::fs::write(&config_path, config).unwrap();
+
+    let transcript = dir.join("agy-transcript.jsonl");
+    std::fs::write(&transcript, antigravity_transcript(&dir.to_string_lossy())).unwrap();
+    let payload = format!(
+        r#"{{"conversationId":"agyconv1-2222-3333","invocationNum":1,"workspacePaths":["{}"],"transcriptPath":"{}"}}"#,
+        dir.display(),
+        transcript.display()
+    );
+
+    // First invocation: pack injected as an ephemeral message + presence up.
+    let (stdout, stderr, ok) = run_in(dir, &["hook", "pre-invocation"], Some(&payload));
+    assert!(ok, "pre-invocation failed: {stderr}");
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let eph = json["injectSteps"][0]["ephemeralMessage"].as_str().unwrap();
+    assert!(
+        eph.contains("DB unique constraints"),
+        "team context must be injected on first invocation: {eph}"
+    );
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "cat-file",
+            "-p",
+            "refs/coopera/presence/Tester/agyconv1-2222-3333:presence.yaml",
+        ])
+        .output()
+        .unwrap();
+    let yaml = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        yaml.contains("Also add tests"),
+        "intent must come from the transcript tail: {yaml}"
+    );
+
+    // Later invocations: presence heartbeat only, no injection.
+    let payload2 = payload.replace("\"invocationNum\":1", "\"invocationNum\":2");
+    let (stdout, _, ok) = run_in(dir, &["hook", "pre-invocation"], Some(&payload2));
+    assert!(ok);
+    assert_eq!(stdout.trim(), "{}", "no re-injection after the first call");
+
+    // Stop queues the conversation for capture (transcript still fresh, so
+    // the sync retro sweep must defer it — live conversations don't distill).
+    let (stdout, _, ok) = run_in_env(
+        dir,
+        &["hook", "stop"],
+        Some(&payload),
+        &[("COOPERA_RETRO_SYNC", "1")],
+    );
+    assert!(ok);
+    assert_eq!(stdout.trim(), "{}");
+    let queue =
+        std::fs::read_to_string(dir.join(".coopera/cache/undistilled.log")).unwrap_or_default();
+    assert!(
+        queue.contains("\tantigravity\tagyconv1-2222-3333"),
+        "stop must queue the conversation with tool and id: {queue}"
+    );
+    assert_eq!(
+        std::fs::read_dir(dir.join("coopera/sessions"))
+            .unwrap()
+            .count(),
+        0,
+        "a live conversation must not distill"
+    );
+
+    // After quiescence, retro distills once with proper attribution.
+    std::fs::File::options()
+        .write(true)
+        .open(&transcript)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+        .unwrap();
+    let (_, stderr, ok) = run_in(dir, &["distill", "--retro"], None);
+    assert!(ok, "retro failed: {stderr}");
+    let digests: Vec<String> = std::fs::read_dir(dir.join("coopera/sessions"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(digests.len(), 1, "{digests:?} — {stderr}");
+    assert!(digests[0].ends_with("agyconv1.md"), "{digests:?}");
+    let digest = std::fs::read_to_string(dir.join("coopera/sessions").join(&digests[0])).unwrap();
+    assert!(
+        digest.contains("(antigravity)"),
+        "digest must attribute antigravity: {digest}"
+    );
+
+    // A later Stop for the same conversation must not re-queue it.
+    let (_, _, ok) = run_in(dir, &["hook", "stop"], Some(&payload));
+    assert!(ok);
+    let queue =
+        std::fs::read_to_string(dir.join(".coopera/cache/undistilled.log")).unwrap_or_default();
+    assert!(
+        !queue.contains("agyconv1"),
+        "distilled conversations must not re-queue: {queue}"
     );
 }
 

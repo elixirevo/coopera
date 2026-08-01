@@ -14,7 +14,7 @@ This repository uses coopera, a harness that shares team context between AI codi
 - Shared team knowledge lives in `coopera/` (concepts, modules, decisions, playbooks). Read `coopera/INDEX.md` first; do not bulk-read the whole wiki directory.\n\
 - Before planning or making design decisions, consult the injected team context and relevant wiki pages. Avoid conflicting with or duplicating in-flight teammate work; align with recorded team decisions.\n\
 - Session digests are written to `coopera/sessions/` automatically; wiki changes ride along with your code PR for human review.\n\
-- If your tool does not run coopera hooks (e.g. Antigravity), start each task by reading `.coopera/cache/presence.md` (teammate activity map) and `coopera/INDEX.md`.\n";
+- If your tool does not run coopera hooks, start each task by reading `.coopera/cache/presence.md` (teammate activity map) and `coopera/INDEX.md`.\n";
 
 const CONFIG_TEMPLATE: &str = "\
 # coopera configuration (defaults shown; all values optional)\n\
@@ -109,9 +109,11 @@ fn install() -> Result<String> {
     )?;
     ensure_gitignore_line(&root, ".coopera/cache/", &mut actions)?;
 
-    // 3) Hooks: Claude Code (.claude/settings.json) + Codex (.codex/config.toml)
+    // 3) Hooks: Claude Code (.claude/settings.json) + Codex
+    //    (.codex/config.toml) + Antigravity (.agents/hooks.json)
     install_claude_hooks(&root, &mut actions)?;
     install_codex_hooks(&root, &mut actions)?;
+    install_antigravity_hooks(&root, &mut actions)?;
 
     // 4) Agent instruction files: managed marker block in CLAUDE.md / AGENTS.md
     for file in ["CLAUDE.md", "AGENTS.md"] {
@@ -283,6 +285,48 @@ fn install_codex_hooks(root: &Path, actions: &mut Vec<String>) -> Result<()> {
         }
         std::fs::write(&path, next)?;
         actions.push("registered Codex hooks (.codex/config.toml)".to_string());
+    }
+    Ok(())
+}
+
+/// F8b — register Antigravity hooks. `.agents/hooks.json` is the workspace
+/// customization file (embedded agy hooks guide, verified against agy
+/// 1.1.9); named hooks merge natively, so coopera owns exactly the
+/// "coopera" key and never touches a team's other hooks. PreInvocation
+/// injects team context on a conversation's first model call; Stop marks
+/// the rolling transcript for capture. Note: loading requires the folder
+/// to be trusted in Antigravity; headless `agy -p` runs load global hooks
+/// only (measured), so these fire in interactive/IDE sessions.
+fn install_antigravity_hooks(root: &Path, actions: &mut Vec<String>) -> Result<()> {
+    let path = root.join(".agents/hooks.json");
+    let original: serde_json::Value = match std::fs::read_to_string(&path) {
+        Ok(s) => serde_json::from_str(&s).context(".agents/hooks.json is not valid JSON")?,
+        Err(_) => serde_json::json!({}),
+    };
+    let mut next = original.clone();
+    let obj = next
+        .as_object_mut()
+        .context(".agents/hooks.json root must be an object")?;
+    let handler = |sub: &str| {
+        serde_json::json!([{
+            "type": "command",
+            "command": guarded_command("antigravity", sub),
+            "timeout": 15
+        }])
+    };
+    obj.insert(
+        "coopera".to_string(),
+        serde_json::json!({
+            "PreInvocation": handler("pre-invocation"),
+            "Stop": handler("stop"),
+        }),
+    );
+    if next != original {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, serde_json::to_string_pretty(&next)?)?;
+        actions.push("registered Antigravity hooks (.agents/hooks.json)".to_string());
     }
     Ok(())
 }

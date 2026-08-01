@@ -1,0 +1,18 @@
+{
+  "coopera": {
+    "PreInvocation": [
+      {
+        "command": "c=\"${COOPERA_BIN:-coopera}\"; command -v \"$c\" >/dev/null 2>&1 && COOPERA_TOOL=antigravity \"$c\" hook pre-invocation || echo {}",
+        "timeout": 15,
+        "type": "command"
+      }
+    ],
+    "Stop": [
+      {
+        "command": "c=\"${COOPERA_BIN:-coopera}\"; command -v \"$c\" >/dev/null 2>&1 && COOPERA_TOOL=antigravity \"$c\" hook stop || echo {}",
+        "timeout": 15,
+        "type": "command"
+      }
+    ]
+  }
+}
