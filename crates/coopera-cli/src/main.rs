@@ -38,6 +38,10 @@ enum Cmd {
         /// Session id for attribution (defaults to the transcript file stem).
         #[arg(long)]
         session: Option<String>,
+        /// Tool that hosted the session (selects the distiller agent —
+        /// decision 003). Defaults to claude-code.
+        #[arg(long)]
+        tool: Option<String>,
         /// Retroactively distill sessions left in the retro queue.
         #[arg(long)]
         retro: bool,
@@ -79,8 +83,14 @@ fn main() {
         Cmd::Distill {
             transcript,
             session,
+            tool,
             retro,
-        } => cmd_distill::run(transcript.as_deref(), session.as_deref(), retro),
+        } => cmd_distill::run(
+            transcript.as_deref(),
+            session.as_deref(),
+            tool.as_deref(),
+            retro,
+        ),
         Cmd::Wiki { cmd } => match cmd {
             WikiCmd::Lint => cmd_wiki::lint(),
         },

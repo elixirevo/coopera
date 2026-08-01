@@ -359,6 +359,8 @@ pub fn session_end() -> i32 {
             if let Some(session) = &input.session_id {
                 cmd.arg("--session").arg(session);
             }
+            // Decision 003: the hosting tool's own agent distills the session.
+            cmd.arg("--tool").arg(tool_name());
             // Detached spawn (own process group): we intentionally do not
             // wait, and hook teardown must not be able to kill it mid-run.
             // Its output goes to the distill log — silent failure is how the

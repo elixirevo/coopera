@@ -15,7 +15,12 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-pub fn run(transcript: Option<&str>, session: Option<&str>, retro: bool) -> i32 {
+pub fn run(
+    transcript: Option<&str>,
+    session: Option<&str>,
+    tool: Option<&str>,
+    retro: bool,
+) -> i32 {
     let Ok(cwd) = std::env::current_dir() else {
         return 0;
     };
@@ -31,10 +36,11 @@ pub fn run(transcript: Option<&str>, session: Option<&str>, retro: bool) -> i32 
         eprintln!("coopera distill: --transcript <path> is required (or --retro)");
         return 1;
     };
+    let tool = tool.unwrap_or("claude-code");
 
     // Crash safety: queue first, clear only after success (F9 retro reuses this).
-    add_pending(&git.root, transcript);
-    match distill_one(&git, Path::new(transcript), session) {
+    add_pending(&git.root, transcript, tool);
+    match distill_one(&git, Path::new(transcript), session, tool) {
         Ok(summary) => {
             clear_pending(&git.root, transcript);
             eprintln!("{summary}");
@@ -146,7 +152,7 @@ fn run_retro(git: &Git) -> i32 {
     let mut attempts = 0usize;
 
     let pending = read_pending(&git.root);
-    for transcript in &pending {
+    for (transcript, tool) in &pending {
         let path = Path::new(transcript);
         if !path.exists() {
             clear_pending(&git.root, transcript);
@@ -157,7 +163,7 @@ fn run_retro(git: &Git) -> i32 {
         }
         attempts += 1;
         seen += 1;
-        match distill_one(git, path, None) {
+        match distill_one(git, path, None, tool) {
             Ok(summary) => {
                 clear_pending(&git.root, transcript);
                 eprintln!("{summary}");
@@ -171,9 +177,11 @@ fn run_retro(git: &Git) -> i32 {
         lock.touch();
     }
 
-    for path in scan_undistilled(git, RETRO_MAX_PER_RUN.saturating_sub(attempts)) {
+    // Each scan find carries its hosting tool, so a Codex rollout distills
+    // via its own agent (decision 003) just like queued sessions do.
+    for (path, tool) in scan_undistilled(git, RETRO_MAX_PER_RUN.saturating_sub(attempts)) {
         seen += 1;
-        match distill_one(git, &path, None) {
+        match distill_one(git, &path, None, tool) {
             Ok(summary) => {
                 eprintln!("{summary}");
                 done += 1;
@@ -207,8 +215,9 @@ fn run_retro(git: &Git) -> i32 {
 /// Skipped: tiny transcripts (below substance), live sessions (fresh mtime
 /// or recent presence), and the distiller's own sessions (recognized by the
 /// fixed prompt marker — recursion guard for the offline path). Newest
-/// first, so the freshest backlog drains first.
-fn scan_undistilled(git: &Git, max: usize) -> Vec<PathBuf> {
+/// first, so the freshest backlog drains first. Each find is tagged with
+/// its hosting tool so the retro loop can pick the matching agent.
+fn scan_undistilled(git: &Git, max: usize) -> Vec<(PathBuf, &'static str)> {
     if max == 0 {
         return Vec::new();
     }
@@ -246,7 +255,7 @@ fn scan_undistilled(git: &Git, max: usize) -> Vec<PathBuf> {
     );
 
     let now = std::time::SystemTime::now();
-    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    let mut candidates: Vec<(std::time::SystemTime, PathBuf, &'static str)> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&store) {
         for path in entries.flatten().map(|e| e.path()) {
             if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
@@ -268,12 +277,16 @@ fn scan_undistilled(git: &Git, max: usize) -> Vec<PathBuf> {
             if head_snippet(&path, 64 * 1024).contains(coopera_core::distill::PROMPT_MARKER) {
                 continue; // a distiller's own session
             }
-            candidates.push((modified, path));
+            candidates.push((modified, path, "claude-code"));
         }
     }
     scan_codex_store(git, &home, &have, &active, now, &mut candidates);
     candidates.sort_by(|a, b| b.0.cmp(&a.0));
-    candidates.into_iter().take(max).map(|(_, p)| p).collect()
+    candidates
+        .into_iter()
+        .take(max)
+        .map(|(_, p, t)| (p, t))
+        .collect()
 }
 
 /// Size and age gates shared by both stores, from metadata alone (no bytes
@@ -306,7 +319,7 @@ fn scan_codex_store(
     have: &std::collections::HashSet<String>,
     active: &std::collections::HashSet<String>,
     now: std::time::SystemTime,
-    candidates: &mut Vec<(std::time::SystemTime, PathBuf)>,
+    candidates: &mut Vec<(std::time::SystemTime, PathBuf, &'static str)>,
 ) {
     let root_canon = git.root.canonicalize().unwrap_or_else(|_| git.root.clone());
     let mut dirs: Vec<(PathBuf, u8)> = vec![(home.join(".codex/sessions"), 0)];
@@ -346,7 +359,7 @@ fn scan_codex_store(
             if head.contains(coopera_core::distill::PROMPT_MARKER) {
                 continue; // a distiller's own session (codex exec)
             }
-            candidates.push((modified, path));
+            candidates.push((modified, path, "codex"));
         }
     }
 }
@@ -383,14 +396,23 @@ fn record_distill_error(root: &Path, e: &anyhow::Error) {
     coopera_core::metrics::record(root, "distill_error", &[("error", msg.into())]);
 }
 
-fn distill_one(git: &Git, transcript_path: &Path, session: Option<&str>) -> Result<String> {
+fn distill_one(
+    git: &Git,
+    transcript_path: &Path,
+    session: Option<&str>,
+    tool: &str,
+) -> Result<String> {
     let t0 = std::time::Instant::now();
     let config = Config::load(&git.root);
     let raw = std::fs::read_to_string(transcript_path)
         .with_context(|| format!("cannot read transcript {}", transcript_path.display()))?;
     // A session_meta first line marks a Codex rollout; anything else is
-    // treated as a Claude Code transcript.
+    // treated as a Claude Code transcript. Format detection also corrects a
+    // mislabeled caller: a rollout is a codex session no matter what the
+    // queue said, and the tool picks both the extractor's sibling agent
+    // (decision 003) and the digest attribution.
     let codex = distill::codex_meta(&raw);
+    let tool = if codex.is_some() { "codex" } else { tool };
     let excerpt = if codex.is_some() {
         distill::extract_codex_rollout(&raw, &git.root)
     } else {
@@ -405,7 +427,7 @@ fn distill_one(git: &Git, transcript_path: &Path, session: Option<&str>) -> Resu
 
     let (pages, _) = wiki::load_wiki(&git.root);
     let prompt = distill::build_prompt(&excerpt, &pages, &git.root);
-    let reply = run_agent(&config, &prompt, &git.root)?;
+    let reply = run_agent(&config, tool, &prompt, &git.root)?;
     let resp = distill::parse_response(&reply)?;
 
     // Digest — always written once past the substance threshold. Codex
@@ -431,12 +453,7 @@ fn distill_one(git: &Git, transcript_path: &Path, session: Option<&str>) -> Resu
     let digest = Digest {
         session: session_id,
         author: git.user_name(),
-        tool: if codex.is_some() {
-            "codex"
-        } else {
-            "claude-code"
-        }
-        .to_string(),
+        tool: tool.to_string(),
         timestamp: now.to_string(),
         intent: resp.intent.clone(),
         decisions: resp.decisions.clone(),
@@ -490,30 +507,95 @@ fn distill_one(git: &Git, transcript_path: &Path, session: Option<&str>) -> Resu
     ))
 }
 
-/// Run the user's own agent headlessly, prompt on stdin. COOPERA_DISTILL=1
-/// marks the child session so our own hooks neither inject into it nor try
-/// to distill it (recursion guard).
+/// Run the session's own agent headlessly (decision 003: per-tool, cost on
+/// the user's subscription), prompt on stdin. COOPERA_DISTILL=1 marks the
+/// child session so our own hooks neither inject into it nor try to distill
+/// it (recursion guard).
+///
+/// Args may carry two placeholder tokens:
+/// - REPLY_FILE_PLACEHOLDER → a fresh temp-file path; the reply is read from
+///   that file instead of stdout (codex exec's stdout is an event stream,
+///   its final message goes through `-o <file>`).
+/// - PROMPT_PLACEHOLDER → the full prompt text; stdin then stays closed
+///   (agy's print mode only accepts the prompt as the `-p` argument).
 ///
 /// Pipe-buffer note: replies are small JSON (well under the 64KB pipe buffer),
 /// so polling try_wait before draining stdout cannot deadlock here.
-fn run_agent(config: &Config, prompt: &str, cwd: &Path) -> Result<String> {
+fn run_agent(config: &Config, tool: &str, prompt: &str, cwd: &Path) -> Result<String> {
     let d = &config.distill;
-    let mut child = std::process::Command::new(&d.command)
-        .args(&d.args)
+    let Some((command, args)) = config.resolve_agent(tool, &coopera_core::spawn::find_on_path)
+    else {
+        bail!(
+            "no distiller agent available for tool '{tool}' — install claude, codex, or agy, \
+             or set [distill] / [distill.agents.{tool}] in .coopera/config.toml"
+        );
+    };
+
+    // Prompts riding in argv must respect the OS per-argument limit (Linux
+    // MAX_ARG_STRLEN is 128KB and multibyte transcripts can exceed it) —
+    // shrink from the end, or the spawn E2BIG poisons the retro queue.
+    let mut argv_prompt = prompt.to_string();
+    if args
+        .iter()
+        .any(|a| a == coopera_core::config::PROMPT_PLACEHOLDER)
+    {
+        while argv_prompt.len() > 120_000 {
+            let keep = argv_prompt.chars().count() * 9 / 10;
+            argv_prompt = argv_prompt.chars().take(keep).collect();
+        }
+    }
+
+    let mut reply_file: Option<PathBuf> = None;
+    let mut prompt_in_argv = false;
+    let args: Vec<String> = args
+        .iter()
+        .map(|a| {
+            if a == coopera_core::config::REPLY_FILE_PLACEHOLDER {
+                let p = reply_file
+                    .get_or_insert_with(|| {
+                        std::env::temp_dir().join(format!(
+                            "coopera-reply-{}-{:x}.txt",
+                            std::process::id(),
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_nanos())
+                                .unwrap_or_default()
+                        ))
+                    })
+                    .clone();
+                p.to_string_lossy().into_owned()
+            } else if a == coopera_core::config::PROMPT_PLACEHOLDER {
+                prompt_in_argv = true;
+                argv_prompt.clone()
+            } else {
+                a.clone()
+            }
+        })
+        .collect();
+
+    let stdin = if prompt_in_argv {
+        Stdio::null()
+    } else {
+        Stdio::piped()
+    };
+    let mut child = std::process::Command::new(&command)
+        .args(&args)
         .current_dir(cwd)
         .env("COOPERA_DISTILL", "1")
-        .stdin(Stdio::piped())
+        .stdin(stdin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .with_context(|| format!("failed to start distiller agent '{}'", d.command))?;
+        .with_context(|| format!("failed to start distiller agent '{command}'"))?;
 
-    child
-        .stdin
-        .take()
-        .context("no stdin handle")?
-        .write_all(prompt.as_bytes())
-        .context("failed to send prompt to distiller agent")?;
+    if !prompt_in_argv {
+        child
+            .stdin
+            .take()
+            .context("no stdin handle")?
+            .write_all(prompt.as_bytes())
+            .context("failed to send prompt to distiller agent")?;
+    }
 
     let deadline = Instant::now() + Duration::from_secs(d.timeout_secs);
     loop {
@@ -522,19 +604,38 @@ fn run_agent(config: &Config, prompt: &str, cwd: &Path) -> Result<String> {
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
-            bail!("distiller agent timed out after {}s", d.timeout_secs);
+            if let Some(p) = &reply_file {
+                let _ = std::fs::remove_file(p);
+            }
+            bail!(
+                "distiller agent '{command}' timed out after {}s",
+                d.timeout_secs
+            );
         }
         std::thread::sleep(Duration::from_millis(200));
     }
     let out = child.wait_with_output()?;
     if !out.status.success() {
+        if let Some(p) = &reply_file {
+            let _ = std::fs::remove_file(p);
+        }
         let err: String = String::from_utf8_lossy(&out.stderr)
             .chars()
             .take(400)
             .collect();
-        bail!("distiller agent exited with {}: {err}", out.status);
+        bail!(
+            "distiller agent '{command}' exited with {}: {err}",
+            out.status
+        );
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    match reply_file {
+        Some(p) => {
+            let reply = std::fs::read_to_string(&p);
+            let _ = std::fs::remove_file(&p);
+            reply.with_context(|| format!("distiller agent '{command}' wrote no reply file"))
+        }
+        None => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+    }
 }
 
 fn queue_path(root: &Path) -> PathBuf {
@@ -575,33 +676,46 @@ pub(crate) fn pending_count(root: &Path) -> usize {
     read_pending(root).len()
 }
 
-fn read_pending(root: &Path) -> Vec<String> {
+/// Queue lines are `path<TAB>tool`; bare-path lines from older builds parse
+/// as claude-code (the only tool that existed then).
+fn read_pending(root: &Path) -> Vec<(String, String)> {
     std::fs::read_to_string(queue_path(root))
         .unwrap_or_default()
         .lines()
-        .map(|l| l.trim().to_string())
+        .map(str::trim)
         .filter(|l| !l.is_empty())
+        .map(|l| match l.split_once('\t') {
+            Some((path, tool)) if !tool.trim().is_empty() => {
+                (path.to_string(), tool.trim().to_string())
+            }
+            _ => (l.to_string(), "claude-code".to_string()),
+        })
         .collect()
 }
 
-fn add_pending(root: &Path, transcript: &str) {
-    let mut lines = read_pending(root);
-    if !lines.iter().any(|l| l == transcript) {
-        lines.push(transcript.to_string());
-    }
+fn write_pending(root: &Path, entries: &[(String, String)]) {
     let path = queue_path(root);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(&path, lines.join("\n") + "\n");
+    let body: String = entries.iter().map(|(p, t)| format!("{p}\t{t}\n")).collect();
+    let _ = std::fs::write(&path, body);
+}
+
+fn add_pending(root: &Path, transcript: &str, tool: &str) {
+    let mut entries = read_pending(root);
+    if !entries.iter().any(|(p, _)| p == transcript) {
+        entries.push((transcript.to_string(), tool.to_string()));
+    }
+    write_pending(root, &entries);
 }
 
 fn clear_pending(root: &Path, transcript: &str) {
-    let lines: Vec<String> = read_pending(root)
+    let entries: Vec<(String, String)> = read_pending(root)
         .into_iter()
-        .filter(|l| l != transcript)
+        .filter(|(p, _)| p != transcript)
         .collect();
-    let _ = std::fs::write(queue_path(root), lines.join("\n") + "\n");
+    write_pending(root, &entries);
 }
 
 #[cfg(test)]
@@ -613,13 +727,34 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         assert_eq!(pending_count(root), 0);
-        add_pending(root, "/a.jsonl");
-        add_pending(root, "/b.jsonl");
-        add_pending(root, "/a.jsonl"); // dedup
-        assert_eq!(read_pending(root), vec!["/a.jsonl", "/b.jsonl"]);
+        add_pending(root, "/a.jsonl", "claude-code");
+        add_pending(root, "/b.jsonl", "codex");
+        add_pending(root, "/a.jsonl", "codex"); // dedup keeps the first tool
+        assert_eq!(
+            read_pending(root),
+            vec![
+                ("/a.jsonl".to_string(), "claude-code".to_string()),
+                ("/b.jsonl".to_string(), "codex".to_string()),
+            ]
+        );
         assert_eq!(pending_count(root), 2);
         clear_pending(root, "/a.jsonl");
-        assert_eq!(read_pending(root), vec!["/b.jsonl"]);
+        assert_eq!(
+            read_pending(root),
+            vec![("/b.jsonl".to_string(), "codex".to_string())]
+        );
+    }
+
+    #[test]
+    fn queue_reads_legacy_bare_path_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join(".coopera/cache")).unwrap();
+        std::fs::write(queue_path(root), "/old-entry.jsonl\n").unwrap();
+        assert_eq!(
+            read_pending(root),
+            vec![("/old-entry.jsonl".to_string(), "claude-code".to_string())]
+        );
     }
 
     #[test]

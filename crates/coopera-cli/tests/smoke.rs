@@ -691,6 +691,152 @@ fn retro_scan_covers_codex_rollouts() {
     );
 }
 
+/// Decision 003 — the session's hosting tool selects its own distiller
+/// agent ([distill.agents.<tool>]), and the COOPERA_OUT placeholder routes
+/// the reply through a temp file (the codex exec shape) instead of stdout.
+#[cfg(unix)]
+#[test]
+fn distiller_agent_follows_the_hosting_tool() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q"]);
+    git(dir, &["config", "user.email", "tester@example.com"]);
+    git(dir, &["config", "user.name", "Tester"]);
+    let (_, stderr, ok) = run_in(dir, &["init"], None);
+    assert!(ok, "init failed: {stderr}");
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-qm", "seed"]);
+
+    // claude-code stub replies on stdout; codex stub ignores stdout and
+    // writes its reply to the file passed as $1 (the COOPERA_OUT temp path),
+    // exactly like `codex exec -o <file>`.
+    let claude_stub = dir.join("claude-stub.sh");
+    std::fs::write(
+        &claude_stub,
+        "#!/bin/sh\ncat > /dev/null\ncat <<'JSON'\n{\"intent\":\"Distilled by claude stub\",\"decisions\":[],\"learnings\":[],\"wiki_pages\":[]}\nJSON\n",
+    )
+    .unwrap();
+    let codex_stub = dir.join("codex-stub.sh");
+    std::fs::write(
+        &codex_stub,
+        "#!/bin/sh\ncat > /dev/null\necho 'event-stream noise { not json }'\nprintf '%s' '{\"intent\":\"Distilled by codex stub\",\"decisions\":[],\"learnings\":[],\"wiki_pages\":[]}' > \"$1\"\n",
+    )
+    .unwrap();
+    // agy-style: the prompt arrives as $1 (argv, not stdin) — capture it so
+    // the test can prove the COOPERA_PROMPT substitution happened.
+    let agy_stub = dir.join("agy-stub.sh");
+    let prompt_capture = dir.join("agy-captured-prompt.txt");
+    std::fs::write(
+        &agy_stub,
+        format!(
+            "#!/bin/sh\nprintf '%s' \"$1\" > \"{}\"\ncat <<'JSON'\n{{\"intent\":\"Distilled by agy stub\",\"decisions\":[],\"learnings\":[],\"wiki_pages\":[]}}\nJSON\n",
+            prompt_capture.display()
+        ),
+    )
+    .unwrap();
+    for s in [&claude_stub, &codex_stub, &agy_stub] {
+        std::fs::set_permissions(s, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let config_path = dir.join(".coopera/config.toml");
+    let mut config = std::fs::read_to_string(&config_path).unwrap();
+    config.push_str(&format!(
+        "\n[distill.agents.claude-code]\ncommand = \"{}\"\nargs = []\n\n[distill.agents.codex]\ncommand = \"{}\"\nargs = [\"COOPERA_OUT\"]\n\n[distill.agents.antigravity]\ncommand = \"{}\"\nargs = [\"COOPERA_PROMPT\"]\n",
+        claude_stub.display(),
+        codex_stub.display(),
+        agy_stub.display()
+    ));
+    std::fs::write(&config_path, config).unwrap();
+
+    let transcripts = tempfile::tempdir().unwrap();
+    let write_transcript = |name: &str| {
+        let p = transcripts.path().join(name);
+        std::fs::write(&p, backlog_transcript()).unwrap();
+        p
+    };
+
+    let t1 = write_transcript("claudesess-1.jsonl");
+    let (_, stderr, ok) = run_in(
+        dir,
+        &[
+            "distill",
+            "--transcript",
+            t1.to_str().unwrap(),
+            "--session",
+            "s-claude",
+            "--tool",
+            "claude-code",
+        ],
+        None,
+    );
+    assert!(ok && stderr.contains("coopera/sessions/"), "{stderr}");
+
+    let t2 = write_transcript("codexsess-2.jsonl");
+    let (_, stderr, ok) = run_in(
+        dir,
+        &[
+            "distill",
+            "--transcript",
+            t2.to_str().unwrap(),
+            "--session",
+            "s-codex",
+            "--tool",
+            "codex",
+        ],
+        None,
+    );
+    assert!(ok && stderr.contains("coopera/sessions/"), "{stderr}");
+
+    let t3 = write_transcript("agysess-3.jsonl");
+    let (_, stderr, ok) = run_in(
+        dir,
+        &[
+            "distill",
+            "--transcript",
+            t3.to_str().unwrap(),
+            "--session",
+            "s-agy",
+            "--tool",
+            "antigravity",
+        ],
+        None,
+    );
+    assert!(ok && stderr.contains("coopera/sessions/"), "{stderr}");
+
+    let mut intents = Vec::new();
+    for e in std::fs::read_dir(dir.join("coopera/sessions"))
+        .unwrap()
+        .flatten()
+    {
+        let body = std::fs::read_to_string(e.path()).unwrap();
+        intents.push(body);
+    }
+    let all = intents.join("\n---\n");
+    assert!(
+        all.contains("Distilled by claude stub"),
+        "claude-code session must use the claude agent: {all}"
+    );
+    assert!(
+        all.contains("Distilled by codex stub"),
+        "codex session must use the codex agent (reply via COOPERA_OUT file): {all}"
+    );
+    assert!(
+        all.contains("Distilled by agy stub"),
+        "antigravity session must use the agy agent: {all}"
+    );
+    assert!(
+        all.contains("s-codex (codex)"),
+        "digest must attribute the hosting tool: {all}"
+    );
+    let captured = std::fs::read_to_string(&prompt_capture).unwrap();
+    assert!(
+        captured.contains("You are the distiller for coopera"),
+        "agy-style agents must receive the prompt via argv: {}",
+        &captured[..captured.len().min(120)]
+    );
+}
+
 /// P1 — Codex-style sessions (no session id in the hook payload) keep a
 /// stable presence key via COOPERA_SESSION_FALLBACK: the same ref is
 /// created at start, updated on prompt, and removed at end.
