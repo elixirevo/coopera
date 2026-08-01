@@ -72,10 +72,17 @@ impl Default for Distill {
 /// whose stdout is a noisy event stream (codex exec).
 pub const REPLY_FILE_PLACEHOLDER: &str = "COOPERA_OUT";
 
-/// Built-in per-tool agent defaults. codex flags verified against
-/// codex-cli 0.146.0 (2026-08-02): stdin prompt via `-`, final message via
-/// `-o`, `--ephemeral` keeps distiller runs out of the session store
-/// (offline recursion guard), read-only sandbox, low reasoning effort (PRD F8).
+/// In agent args, this placeholder is replaced with the full prompt text and
+/// stdin stays closed — for CLIs whose print mode only accepts the prompt as
+/// an argument (agy takes `-p <prompt>` and ignores piped stdin).
+pub const PROMPT_PLACEHOLDER: &str = "COOPERA_PROMPT";
+
+/// Built-in per-tool agent defaults, all verified against real CLIs on
+/// 2026-08-02: codex-cli 0.146.0 (stdin prompt via `-`, final message via
+/// `-o`, `--ephemeral` keeps distiller runs out of the session store —
+/// offline recursion guard; read-only sandbox, low effort per PRD F8) and
+/// agy (Antigravity; prompt must be the `-p` argument — no stdin — and the
+/// fixed-schema prompt holds even through user-configured personas).
 fn builtin_agent(tool: &str) -> Option<AgentCmd> {
     match tool {
         "claude-code" => Some(AgentCmd {
@@ -99,9 +106,27 @@ fn builtin_agent(tool: &str) -> Option<AgentCmd> {
             .map(|s| s.to_string())
             .collect(),
         }),
+        "antigravity" => Some(AgentCmd {
+            command: "agy".to_string(),
+            args: [
+                "--effort",
+                "low",
+                "--print-timeout",
+                "600s",
+                "-p",
+                PROMPT_PLACEHOLDER,
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        }),
         _ => None,
     }
 }
+
+/// Fallback order when a tool's own CLI is missing: any installed agent
+/// beats an undistilled session.
+const KNOWN_TOOLS: [&str; 3] = ["claude-code", "codex", "antigravity"];
 
 impl Config {
     /// Pick the distiller agent for a session hosted by `tool`.
@@ -130,7 +155,7 @@ impl Config {
                 return Some((a.command, a.args));
             }
         }
-        for other in ["claude-code", "codex"] {
+        for other in KNOWN_TOOLS {
             if other == tool {
                 continue;
             }
@@ -195,6 +220,12 @@ mod tests {
         assert_eq!(args[0], "exec");
         assert!(args.contains(&REPLY_FILE_PLACEHOLDER.to_string()));
         assert!(args.contains(&"--ephemeral".to_string()));
+        let (cmd, args) = c.resolve_agent("antigravity", &all).unwrap();
+        assert_eq!(cmd, "agy");
+        assert!(
+            args.contains(&PROMPT_PLACEHOLDER.to_string()),
+            "agy takes the prompt as an argument: {args:?}"
+        );
     }
 
     #[test]

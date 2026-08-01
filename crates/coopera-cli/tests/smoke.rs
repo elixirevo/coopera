@@ -583,15 +583,28 @@ fn distiller_agent_follows_the_hosting_tool() {
         "#!/bin/sh\ncat > /dev/null\necho 'event-stream noise { not json }'\nprintf '%s' '{\"intent\":\"Distilled by codex stub\",\"decisions\":[],\"learnings\":[],\"wiki_pages\":[]}' > \"$1\"\n",
     )
     .unwrap();
-    for s in [&claude_stub, &codex_stub] {
+    // agy-style: the prompt arrives as $1 (argv, not stdin) — capture it so
+    // the test can prove the COOPERA_PROMPT substitution happened.
+    let agy_stub = dir.join("agy-stub.sh");
+    let prompt_capture = dir.join("agy-captured-prompt.txt");
+    std::fs::write(
+        &agy_stub,
+        format!(
+            "#!/bin/sh\nprintf '%s' \"$1\" > \"{}\"\ncat <<'JSON'\n{{\"intent\":\"Distilled by agy stub\",\"decisions\":[],\"learnings\":[],\"wiki_pages\":[]}}\nJSON\n",
+            prompt_capture.display()
+        ),
+    )
+    .unwrap();
+    for s in [&claude_stub, &codex_stub, &agy_stub] {
         std::fs::set_permissions(s, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     let config_path = dir.join(".coopera/config.toml");
     let mut config = std::fs::read_to_string(&config_path).unwrap();
     config.push_str(&format!(
-        "\n[distill.agents.claude-code]\ncommand = \"{}\"\nargs = []\n\n[distill.agents.codex]\ncommand = \"{}\"\nargs = [\"COOPERA_OUT\"]\n",
+        "\n[distill.agents.claude-code]\ncommand = \"{}\"\nargs = []\n\n[distill.agents.codex]\ncommand = \"{}\"\nargs = [\"COOPERA_OUT\"]\n\n[distill.agents.antigravity]\ncommand = \"{}\"\nargs = [\"COOPERA_PROMPT\"]\n",
         claude_stub.display(),
-        codex_stub.display()
+        codex_stub.display(),
+        agy_stub.display()
     ));
     std::fs::write(&config_path, config).unwrap();
 
@@ -634,6 +647,22 @@ fn distiller_agent_follows_the_hosting_tool() {
     );
     assert!(ok && stderr.contains("coopera/sessions/"), "{stderr}");
 
+    let t3 = write_transcript("agysess-3.jsonl");
+    let (_, stderr, ok) = run_in(
+        dir,
+        &[
+            "distill",
+            "--transcript",
+            t3.to_str().unwrap(),
+            "--session",
+            "s-agy",
+            "--tool",
+            "antigravity",
+        ],
+        None,
+    );
+    assert!(ok && stderr.contains("coopera/sessions/"), "{stderr}");
+
     let mut intents = Vec::new();
     for e in std::fs::read_dir(dir.join("coopera/sessions"))
         .unwrap()
@@ -652,8 +681,18 @@ fn distiller_agent_follows_the_hosting_tool() {
         "codex session must use the codex agent (reply via COOPERA_OUT file): {all}"
     );
     assert!(
+        all.contains("Distilled by agy stub"),
+        "antigravity session must use the agy agent: {all}"
+    );
+    assert!(
         all.contains("s-codex (codex)"),
         "digest must attribute the hosting tool: {all}"
+    );
+    let captured = std::fs::read_to_string(&prompt_capture).unwrap();
+    assert!(
+        captured.contains("You are the distiller for coopera"),
+        "agy-style agents must receive the prompt via argv: {}",
+        &captured[..captured.len().min(120)]
     );
 }
 

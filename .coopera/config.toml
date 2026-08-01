@@ -8,8 +8,8 @@ instructions = 200
 
 # [distill]
 # Session distillation runs the hosting tool's own agent headlessly
-# (claude-code -> claude -p, codex -> codex exec; falls back to whichever
-# is installed). Uncomment to override for every tool:
+# (claude-code -> claude -p, codex -> codex exec, antigravity -> agy -p;
+# falls back to whichever is installed). Uncomment to override for every tool:
 # command = "claude"
 # args = ["-p"]                # cheaper/faster: ["-p", "--model", "claude-haiku-4-5"]
 # timeout_secs = 600

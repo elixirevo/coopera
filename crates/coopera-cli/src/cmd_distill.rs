@@ -400,10 +400,12 @@ fn distill_one(
 /// child session so our own hooks neither inject into it nor try to distill
 /// it (recursion guard).
 ///
-/// Args may carry the REPLY_FILE_PLACEHOLDER token: it is replaced with a
-/// fresh temp-file path and the reply is read from that file instead of
-/// stdout — codex exec's stdout is an event stream, its final message goes
-/// through `-o <file>`.
+/// Args may carry two placeholder tokens:
+/// - REPLY_FILE_PLACEHOLDER → a fresh temp-file path; the reply is read from
+///   that file instead of stdout (codex exec's stdout is an event stream,
+///   its final message goes through `-o <file>`).
+/// - PROMPT_PLACEHOLDER → the full prompt text; stdin then stays closed
+///   (agy's print mode only accepts the prompt as the `-p` argument).
 ///
 /// Pipe-buffer note: replies are small JSON (well under the 64KB pipe buffer),
 /// so polling try_wait before draining stdout cannot deadlock here.
@@ -412,12 +414,27 @@ fn run_agent(config: &Config, tool: &str, prompt: &str, cwd: &Path) -> Result<St
     let Some((command, args)) = config.resolve_agent(tool, &coopera_core::spawn::find_on_path)
     else {
         bail!(
-            "no distiller agent available for tool '{tool}' — install claude or codex, \
+            "no distiller agent available for tool '{tool}' — install claude, codex, or agy, \
              or set [distill] / [distill.agents.{tool}] in .coopera/config.toml"
         );
     };
 
+    // Prompts riding in argv must respect the OS per-argument limit (Linux
+    // MAX_ARG_STRLEN is 128KB and multibyte transcripts can exceed it) —
+    // shrink from the end, or the spawn E2BIG poisons the retro queue.
+    let mut argv_prompt = prompt.to_string();
+    if args
+        .iter()
+        .any(|a| a == coopera_core::config::PROMPT_PLACEHOLDER)
+    {
+        while argv_prompt.len() > 120_000 {
+            let keep = argv_prompt.chars().count() * 9 / 10;
+            argv_prompt = argv_prompt.chars().take(keep).collect();
+        }
+    }
+
     let mut reply_file: Option<PathBuf> = None;
+    let mut prompt_in_argv = false;
     let args: Vec<String> = args
         .iter()
         .map(|a| {
@@ -435,28 +452,38 @@ fn run_agent(config: &Config, tool: &str, prompt: &str, cwd: &Path) -> Result<St
                     })
                     .clone();
                 p.to_string_lossy().into_owned()
+            } else if a == coopera_core::config::PROMPT_PLACEHOLDER {
+                prompt_in_argv = true;
+                argv_prompt.clone()
             } else {
                 a.clone()
             }
         })
         .collect();
 
+    let stdin = if prompt_in_argv {
+        Stdio::null()
+    } else {
+        Stdio::piped()
+    };
     let mut child = std::process::Command::new(&command)
         .args(&args)
         .current_dir(cwd)
         .env("COOPERA_DISTILL", "1")
-        .stdin(Stdio::piped())
+        .stdin(stdin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("failed to start distiller agent '{command}'"))?;
 
-    child
-        .stdin
-        .take()
-        .context("no stdin handle")?
-        .write_all(prompt.as_bytes())
-        .context("failed to send prompt to distiller agent")?;
+    if !prompt_in_argv {
+        child
+            .stdin
+            .take()
+            .context("no stdin handle")?
+            .write_all(prompt.as_bytes())
+            .context("failed to send prompt to distiller agent")?;
+    }
 
     let deadline = Instant::now() + Duration::from_secs(d.timeout_secs);
     loop {
