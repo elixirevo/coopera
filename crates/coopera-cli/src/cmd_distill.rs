@@ -288,6 +288,40 @@ fn queue_path(root: &Path) -> PathBuf {
     root.join(".coopera/cache/undistilled.log")
 }
 
+/// Where hook-spawned distiller output lands. Background distillation used to
+/// discard stderr entirely — failures were invisible, which read as "coopera
+/// does nothing" (the visibility principle of decision 006 applies to the
+/// capture axis too).
+pub(crate) fn log_path(root: &Path) -> PathBuf {
+    root.join(".coopera/cache/distill.log")
+}
+
+/// Append one line to the distill log, fail-open. Capped: past 512KB the log
+/// is truncated first (it is a local debug aid, not a durable record).
+pub(crate) fn append_log(root: &Path, line: &str) {
+    let path = log_path(root);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(meta) = path.metadata() {
+        if meta.len() > 512 * 1024 {
+            let _ = std::fs::write(&path, "");
+        }
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
+/// Sessions still waiting for distillation (failed or never attempted).
+pub(crate) fn pending_count(root: &Path) -> usize {
+    read_pending(root).len()
+}
+
 fn read_pending(root: &Path) -> Vec<String> {
     std::fs::read_to_string(queue_path(root))
         .unwrap_or_default()
@@ -315,4 +349,38 @@ fn clear_pending(root: &Path, transcript: &str) {
         .filter(|l| l != transcript)
         .collect();
     let _ = std::fs::write(queue_path(root), lines.join("\n") + "\n");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queue_add_read_clear_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        assert_eq!(pending_count(root), 0);
+        add_pending(root, "/a.jsonl");
+        add_pending(root, "/b.jsonl");
+        add_pending(root, "/a.jsonl"); // dedup
+        assert_eq!(read_pending(root), vec!["/a.jsonl", "/b.jsonl"]);
+        assert_eq!(pending_count(root), 2);
+        clear_pending(root, "/a.jsonl");
+        assert_eq!(read_pending(root), vec!["/b.jsonl"]);
+    }
+
+    #[test]
+    fn append_log_writes_and_truncates_past_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        append_log(root, "first line");
+        let content = std::fs::read_to_string(log_path(root)).unwrap();
+        assert!(content.contains("first line"));
+
+        std::fs::write(log_path(root), "x".repeat(600 * 1024)).unwrap();
+        append_log(root, "after rotation");
+        let content = std::fs::read_to_string(log_path(root)).unwrap();
+        assert!(content.contains("after rotation"));
+        assert!(content.len() < 1024, "oversized log must be truncated");
+    }
 }

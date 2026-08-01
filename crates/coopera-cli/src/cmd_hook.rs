@@ -125,6 +125,12 @@ pub fn session_start() -> i32 {
                     errors.len()
                 ));
             }
+            let pending = crate::cmd_distill::pending_count(&git.root);
+            if pending > 0 {
+                msg.push_str(&format!(
+                    " — {pending} undistilled session(s) pending (see .coopera/cache/distill.log)"
+                ));
+            }
             HookOutput::session_start(pack.text, Some(msg))
         }
         // Fail-open: outside a repo (or git missing) we inject nothing.
@@ -238,6 +244,22 @@ fn trigger_context(git: &Git, prompt: &str) -> (String, usize) {
     )
 }
 
+/// Both stdio handles pointed at the distill log (append), or null when the
+/// log cannot be opened — logging must never block the spawn itself.
+fn distill_log_stdio(root: &std::path::Path) -> (std::process::Stdio, std::process::Stdio) {
+    let opened = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(crate::cmd_distill::log_path(root));
+    match opened {
+        Ok(f) => match f.try_clone() {
+            Ok(f2) => (f.into(), f2.into()),
+            Err(_) => (std::process::Stdio::null(), std::process::Stdio::null()),
+        },
+        Err(_) => (std::process::Stdio::null(), std::process::Stdio::null()),
+    }
+}
+
 /// F3+F5 — SessionEnd: clean up this session's presence ref and spawn
 /// background distillation. Exits immediately; teardown is never delayed.
 pub fn session_end() -> i32 {
@@ -252,6 +274,13 @@ pub fn session_end() -> i32 {
             presence::remove(&git, &git.user_name(), session, NET_TIMEOUT);
         }
         if let Some(transcript) = &input.transcript_path {
+            crate::cmd_distill::append_log(
+                &git.root,
+                &format!(
+                    "[{}] session-end: spawning distill for {transcript}",
+                    jiff::Timestamp::now()
+                ),
+            );
             let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("coopera"));
             let mut cmd = std::process::Command::new(exe);
             cmd.arg("distill").arg("--transcript").arg(transcript);
@@ -260,10 +289,13 @@ pub fn session_end() -> i32 {
             }
             // Detached spawn (own process group): we intentionally do not
             // wait, and hook teardown must not be able to kill it mid-run.
+            // Its output goes to the distill log — silent failure is how the
+            // capture axis stayed broken for days without anyone noticing.
+            let (out, err) = distill_log_stdio(&git.root);
             cmd.current_dir(&git.root)
                 .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null());
+                .stdout(out)
+                .stderr(err);
             let _ = coopera_core::spawn::detach(&mut cmd).spawn();
         }
     }

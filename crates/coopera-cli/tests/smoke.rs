@@ -123,6 +123,24 @@ fn m1_vertical_slice() {
         "visibility line required: {msg}"
     );
 
+    // P0: an undistilled backlog is surfaced in the visibility line.
+    std::fs::write(
+        dir.join(".coopera/cache/undistilled.log"),
+        "/nonexistent/transcript.jsonl\n",
+    )
+    .unwrap();
+    let (stdout, _, ok) = run_in(dir, &["hook", "session-start"], Some("{}"));
+    assert!(ok);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert!(
+        json["systemMessage"]
+            .as_str()
+            .unwrap()
+            .contains("1 undistilled session(s) pending"),
+        "backlog must be visible: {json}"
+    );
+    std::fs::write(dir.join(".coopera/cache/undistilled.log"), "").unwrap();
+
     // F2: fail-open outside a repo
     let outside = tempfile::tempdir().unwrap();
     let (stdout, _, ok) = run_in(outside.path(), &["hook", "session-start"], Some("{}"));
