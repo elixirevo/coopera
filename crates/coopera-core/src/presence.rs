@@ -126,6 +126,25 @@ fn age_secs(now: &jiff::Timestamp, iso: &str) -> Option<i64> {
     Some(now.duration_since(ts).as_secs())
 }
 
+/// Sanitized session ids with a presence entry seen within `max_age_secs`.
+/// Used to keep retroactive distillation away from sessions that are still
+/// live (their transcript is mid-flight, not a finished session).
+pub fn recent_session_ids(
+    git: &Git,
+    now: jiff::Timestamp,
+    max_age_secs: i64,
+) -> std::collections::HashSet<String> {
+    load_all(git)
+        .iter()
+        .filter(|e| {
+            age_secs(&now, &e.last_seen)
+                .map(|a| a <= max_age_secs)
+                .unwrap_or(false)
+        })
+        .map(|e| sanitize(&e.session))
+        .collect()
+}
+
 fn age_label(secs: i64) -> String {
     if secs < 90 {
         "just now".to_string()
@@ -276,6 +295,36 @@ mod tests {
         remove(&git_a, "alice", "sess-aaaa", Duration::from_secs(5));
         assert!(fetch(&git_b, Duration::from_secs(5)));
         assert!(load_all(&git_b).is_empty(), "pruned after remote delete");
+    }
+
+    #[test]
+    fn recent_session_ids_reflect_last_seen_age() {
+        let dir = tempfile::tempdir().unwrap();
+        sh_git(dir.path(), &["init", "-q"]);
+        let git = Git::discover(dir.path()).unwrap();
+        let now = jiff::Timestamp::now();
+        let fresh = now.to_string();
+        let old = now
+            .checked_sub(jiff::Span::new().hours(2))
+            .unwrap()
+            .to_string();
+        publish(
+            &git,
+            &entry("me", "sess-live", "working", &fresh),
+            false,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        publish(
+            &git,
+            &entry("me", "sess-dead", "crashed", &old),
+            false,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        let ids = recent_session_ids(&git, now, 1800);
+        assert!(ids.contains("sess-live"), "{ids:?}");
+        assert!(!ids.contains("sess-dead"), "{ids:?}");
     }
 
     #[test]

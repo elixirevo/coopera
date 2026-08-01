@@ -23,12 +23,24 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 fn run_in(dir: &Path, args: &[&str], stdin: Option<&str>) -> (String, String, bool) {
+    run_in_env(dir, args, stdin, &[])
+}
+
+fn run_in_env(
+    dir: &Path,
+    args: &[&str],
+    stdin: Option<&str>,
+    envs: &[(&str, &str)],
+) -> (String, String, bool) {
     let mut cmd = Command::new(bin());
     cmd.args(args)
         .current_dir(dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
     let mut child = cmd.spawn().unwrap();
     if let Some(input) = stdin {
         child
@@ -305,6 +317,149 @@ JSON
     assert!(
         !queue.contains("abcd1234"),
         "queue must be cleared on success: {queue}"
+    );
+}
+
+fn pad_line() -> String {
+    format!(r#"{{"type":"pad","x":"{}"}}"#, "x".repeat(20_000))
+}
+
+/// A plausible finished-session transcript: 4 substantive messages plus a
+/// pad line (skipped by the extractor) that pushes it over the 16KB scan
+/// threshold.
+fn backlog_transcript() -> String {
+    [
+        r#"{"type":"user","message":{"role":"user","content":"Make payment retries idempotent"}}"#
+            .to_string(),
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I will refactor the retry logic."}]}}"#.to_string(),
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Also add tests"}]}}"#.to_string(),
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done. We chose DB unique constraints."}]}}"#.to_string(),
+        pad_line(),
+    ]
+    .join("\n")
+}
+
+/// P0 — retro scan: drains the undigested backlog while skipping live
+/// sessions (fresh mtime), the distiller's own transcripts (prompt marker),
+/// tiny sessions, and dead queue entries.
+#[cfg(unix)]
+#[test]
+fn retro_scan_skips_noise_and_drains_backlog() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q"]);
+    git(dir, &["config", "user.email", "tester@example.com"]);
+    git(dir, &["config", "user.name", "Tester"]);
+    let (_, stderr, ok) = run_in(dir, &["init"], None);
+    assert!(ok, "init failed: {stderr}");
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-qm", "seed"]);
+
+    let stub = dir.join("stub-agent.sh");
+    std::fs::write(
+        &stub,
+        "#!/bin/sh\ncat > /dev/null\ncat <<'JSON'\n{\"intent\":\"Backlog session\",\"decisions\":[\"One durable decision\"],\"learnings\":[],\"wiki_pages\":[]}\nJSON\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let config_path = dir.join(".coopera/config.toml");
+    let mut config = std::fs::read_to_string(&config_path).unwrap();
+    config.push_str(&format!(
+        "\n[distill]\ncommand = \"{}\"\nargs = []\n",
+        stub.display()
+    ));
+    std::fs::write(&config_path, config).unwrap();
+
+    // Fake transcript store under a fake HOME, keyed by the repo-root slug
+    // exactly as the scanner computes it.
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .unwrap();
+    let root = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let slug: String = root
+        .chars()
+        .map(|c| {
+            if c == '/' || c == '\\' || c == ':' {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let home = tempfile::tempdir().unwrap();
+    let store = home.path().join(".claude/projects").join(&slug);
+    std::fs::create_dir_all(&store).unwrap();
+
+    let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    let age = |p: &Path| {
+        std::fs::File::options()
+            .write(true)
+            .open(p)
+            .unwrap()
+            .set_modified(hour_ago)
+            .unwrap();
+    };
+
+    let real = store.join("realsess-0000-4444.jsonl");
+    std::fs::write(&real, backlog_transcript()).unwrap();
+    age(&real);
+    let distiller = store.join("distsess-1111.jsonl");
+    std::fs::write(
+        &distiller,
+        format!(
+            "{}\n{}",
+            r#"{"type":"user","message":{"role":"user","content":"You are the distiller for coopera, a team-context harness. Read the coding-session conversation below."}}"#,
+            pad_line()
+        ),
+    )
+    .unwrap();
+    age(&distiller);
+    let tiny = store.join("tinysess-2222.jsonl");
+    std::fs::write(
+        &tiny,
+        r#"{"type":"user","message":{"role":"user","content":"hi"}}"#,
+    )
+    .unwrap();
+    age(&tiny);
+    // Fresh mtime → still live → untouched.
+    std::fs::write(store.join("livesess-3333.jsonl"), backlog_transcript()).unwrap();
+
+    // Dead queue entry → cleared without an attempt.
+    std::fs::write(
+        dir.join(".coopera/cache/undistilled.log"),
+        "/gone/away.jsonl\n",
+    )
+    .unwrap();
+
+    let (_, stderr, ok) = run_in_env(
+        dir,
+        &["distill", "--retro"],
+        None,
+        &[("HOME", home.path().to_str().unwrap())],
+    );
+    assert!(ok, "retro failed: {stderr}");
+
+    let digests: Vec<String> = std::fs::read_dir(dir.join("coopera/sessions"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        digests.len(),
+        1,
+        "only the backlog session distills: {digests:?} — {stderr}"
+    );
+    assert!(digests[0].ends_with("realsess.md"), "{digests:?}");
+    let queue =
+        std::fs::read_to_string(dir.join(".coopera/cache/undistilled.log")).unwrap_or_default();
+    assert!(
+        queue.trim().is_empty(),
+        "dead queue entry must be cleared: {queue}"
     );
 }
 

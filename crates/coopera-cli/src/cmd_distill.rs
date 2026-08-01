@@ -47,6 +47,16 @@ pub fn run(transcript: Option<&str>, session: Option<&str>, retro: bool) -> i32 
     }
 }
 
+/// Each distillation is an agent call on the user's own subscription — a
+/// single retro run stays cost-bounded; the rest drains on later runs.
+const RETRO_MAX_PER_RUN: usize = 3;
+/// A transcript written this recently belongs to a session that is likely
+/// still live (Claude Code appends continuously) — never distill mid-flight.
+const ACTIVE_MTIME_SECS: u64 = 10 * 60;
+/// A presence entry seen this recently also marks its session as live even
+/// when the transcript has been quiet (user thinking, long tool run).
+const ACTIVE_PRESENCE_SECS: i64 = 30 * 60;
+
 /// F9 — retroactive distillation, the universal fallback for crashed
 /// sessions and hook-less tools (Antigravity). Two sources: the failure
 /// queue, and a scan of the Claude Code transcript store for sessions that
@@ -54,6 +64,7 @@ pub fn run(transcript: Option<&str>, session: Option<&str>, retro: bool) -> i32 
 fn run_retro(git: &Git) -> i32 {
     let mut done = 0usize;
     let mut seen = 0usize;
+    let mut attempts = 0usize;
 
     let pending = read_pending(&git.root);
     for transcript in &pending {
@@ -62,6 +73,10 @@ fn run_retro(git: &Git) -> i32 {
             clear_pending(&git.root, transcript);
             continue;
         }
+        if attempts >= RETRO_MAX_PER_RUN {
+            break; // leave the rest for the next run
+        }
+        attempts += 1;
         seen += 1;
         match distill_one(git, path, None) {
             Ok(summary) => {
@@ -73,7 +88,7 @@ fn run_retro(git: &Git) -> i32 {
         }
     }
 
-    for path in scan_undistilled(git, 3) {
+    for path in scan_undistilled(git, RETRO_MAX_PER_RUN.saturating_sub(attempts)) {
         seen += 1;
         match distill_one(git, &path, None) {
             Ok(summary) => {
@@ -94,8 +109,14 @@ fn run_retro(git: &Git) -> i32 {
 
 /// Recent Claude Code transcripts for this repo that have no matching digest
 /// in coopera/sessions/. Digest filenames end in the 8-char session prefix, so
-/// matching is mechanical. Tiny transcripts are skipped (below substance).
+/// matching is mechanical. Skipped: tiny transcripts (below substance), live
+/// sessions (fresh mtime or recent presence), and the distiller's own
+/// sessions (recognized by the fixed prompt marker — recursion guard for the
+/// offline path). Newest first, so the freshest backlog drains first.
 fn scan_undistilled(git: &Git, max: usize) -> Vec<PathBuf> {
+    if max == 0 {
+        return Vec::new();
+    }
     let Some(home) = std::env::var_os("HOME") else {
         return Vec::new();
     };
@@ -122,19 +143,21 @@ fn scan_undistilled(git: &Git, max: usize) -> Vec<PathBuf> {
             }
         }
     }
+    let active = coopera_core::presence::recent_session_ids(
+        git,
+        jiff::Timestamp::now(),
+        ACTIVE_PRESENCE_SECS,
+    );
 
     let now = std::time::SystemTime::now();
-    let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(&store) else {
-        return out;
+        return Vec::new();
     };
-    let mut files: Vec<PathBuf> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("jsonl"))
-        .collect();
-    files.sort();
-    for path in files {
+    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    for path in entries.flatten().map(|e| e.path()) {
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
         let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
             continue;
         };
@@ -142,23 +165,45 @@ fn scan_undistilled(git: &Git, max: usize) -> Vec<PathBuf> {
         if have.contains(&sid8) {
             continue;
         }
+        if active.contains(&coopera_core::presence::sanitize(&stem)) {
+            continue; // session still live per presence board
+        }
         let Ok(meta) = path.metadata() else { continue };
         if meta.len() < 16 * 1024 {
             continue;
         }
-        if let Ok(modified) = meta.modified() {
-            if let Ok(age) = now.duration_since(modified) {
-                if age > Duration::from_secs(14 * 24 * 3600) {
-                    continue;
-                }
-            }
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        // A clock-skewed (future) mtime reads as "just written" — skip.
+        let Ok(age) = now.duration_since(modified) else {
+            continue;
+        };
+        if age > Duration::from_secs(14 * 24 * 3600) {
+            continue;
         }
-        out.push(path);
-        if out.len() >= max {
-            break;
+        if age < Duration::from_secs(ACTIVE_MTIME_SECS) {
+            continue; // still being written
         }
+        if head_snippet(&path, 64 * 1024).contains(coopera_core::distill::PROMPT_MARKER) {
+            continue; // a distiller's own session
+        }
+        candidates.push((modified, path));
     }
-    out
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    candidates.into_iter().take(max).map(|(_, p)| p).collect()
+}
+
+/// First `bytes` of a file, lossily decoded — enough to fingerprint distiller
+/// transcripts without reading multi-MB session files whole.
+fn head_snippet(path: &Path, bytes: usize) -> String {
+    use std::io::Read as _;
+    let Ok(f) = std::fs::File::open(path) else {
+        return String::new();
+    };
+    let mut buf = Vec::with_capacity(bytes.min(64 * 1024));
+    let _ = f.take(bytes as u64).read_to_end(&mut buf);
+    String::from_utf8_lossy(&buf).into_owned()
 }
 
 fn distill_one(git: &Git, transcript_path: &Path, session: Option<&str>) -> Result<String> {
