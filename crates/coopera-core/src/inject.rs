@@ -14,7 +14,8 @@ pub struct InjectionPack {
     pub text: String,
     pub items: usize,
     pub tokens: usize,
-    /// Pages excluded because their anchored code changed since verification.
+    /// Pages whose anchored code changed since verification — injected with a
+    /// [STALE — re-verify] marker while budget allows, pointers otherwise.
     pub stale: usize,
     /// Teammate-activity lines included (presence + branch signals).
     pub presence_items: usize,
@@ -68,9 +69,10 @@ fn rel_path(page: &Page) -> String {
 
 /// Build the SessionStart injection pack (L0 index + L1 matched summaries)
 /// under the hard token budget. Stale pages (anchored code changed since
-/// verification) are excluded from summaries and listed as pointers only —
-/// old knowledge injected as fresh is worse than no knowledge (00-harness §2.4).
-/// Presence section is added in M2 (F5).
+/// verification) rank after fresh ones and carry an explicit
+/// [STALE — re-verify] marker — flagged old knowledge beats a bare pointer,
+/// but silently injecting it as fresh would be worse than nothing
+/// (00-harness §2.4). Whatever exceeds the budget degrades to pointers.
 pub fn build_pack(
     pages: &[Page],
     branch: &str,
@@ -116,19 +118,40 @@ pub fn build_pack(
         lines.push(line);
     }
 
-    // Stale pointers: existence is announced, content is not injected.
-    let stale_rels: Vec<String> = pages
+    // Stale summaries after fresh ones, same relevance order; overflow
+    // degrades to a pointer list so existence is never hidden.
+    let mut stale_ranked: Vec<(&Page, i64)> = pages
         .iter()
         .filter(|p| stale.contains(&p.path))
-        .map(rel_path)
+        .map(|p| (p, score(p, branch, changed)))
         .collect();
-    let stale_count = stale_rels.len();
-    let stale_note = if stale_rels.is_empty() {
+    stale_ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.path.cmp(&b.0.path)));
+    let stale_count = stale_ranked.len();
+
+    let mut stale_lines: Vec<String> = Vec::new();
+    let mut stale_leftover: Vec<String> = Vec::new();
+    for (page, _) in &stale_ranked {
+        let line = format!(
+            "- [{}][STALE — re-verify] {} — {} ({})",
+            page.front.page_type,
+            page.front.title,
+            page.front.summary.replace('\n', " "),
+            rel_path(page)
+        );
+        let t = estimate_tokens(&line);
+        if wiki_tokens + t > budget.wiki {
+            stale_leftover.push(rel_path(page));
+            continue;
+        }
+        wiki_tokens += t;
+        stale_lines.push(line);
+    }
+    let stale_note = if stale_leftover.is_empty() {
         String::new()
     } else {
-        let shown: Vec<&str> = stale_rels.iter().take(5).map(String::as_str).collect();
-        let more = if stale_count > shown.len() {
-            format!(" (+{} more)", stale_count - shown.len())
+        let shown: Vec<&str> = stale_leftover.iter().take(5).map(String::as_str).collect();
+        let more = if stale_leftover.len() > shown.len() {
+            format!(" (+{} more)", stale_leftover.len() - shown.len())
         } else {
             String::new()
         };
@@ -150,7 +173,11 @@ pub fn build_pack(
         presence_lines.push(line.clone());
     }
 
-    if lines.is_empty() && stale_note.is_empty() && presence_lines.is_empty() {
+    if lines.is_empty()
+        && stale_lines.is_empty()
+        && stale_note.is_empty()
+        && presence_lines.is_empty()
+    {
         return InjectionPack {
             text: String::new(),
             items: 0,
@@ -160,19 +187,21 @@ pub fn build_pack(
         };
     }
 
-    let compose = |lines: &[String]| {
+    let compose = |fresh: &[String], stale_shown: &[String]| {
         let mut text = String::from("<team-context source=\"coopera\">\n");
         if !presence_lines.is_empty() {
             text.push_str("## Active teammate work\n");
             text.push_str(&presence_lines.join("\n"));
             text.push_str("\n\n");
         }
-        if !lines.is_empty() || !stale_note.is_empty() {
+        if !fresh.is_empty() || !stale_shown.is_empty() || !stale_note.is_empty() {
             text.push_str("## Team knowledge (coopera/)\n");
-            if lines.is_empty() {
+            if fresh.is_empty() && stale_shown.is_empty() {
                 text.push_str("(no fresh pages)");
             } else {
-                text.push_str(&lines.join("\n"));
+                let mut all: Vec<&str> = fresh.iter().map(String::as_str).collect();
+                all.extend(stale_shown.iter().map(String::as_str));
+                text.push_str(&all.join("\n"));
             }
             if !stale_note.is_empty() {
                 text.push_str("\n\n");
@@ -186,17 +215,22 @@ pub fn build_pack(
         text
     };
 
-    // Enforce the total hard cap defensively.
-    let mut text = compose(&lines);
+    // Enforce the total hard cap defensively — stale summaries are the first
+    // to go, fresh pages only after that.
+    let mut text = compose(&lines, &stale_lines);
     let mut tokens = estimate_tokens(&text);
-    while tokens > budget.total && lines.len() > 1 {
-        lines.pop();
-        text = compose(&lines);
+    while tokens > budget.total && (!stale_lines.is_empty() || lines.len() > 1) {
+        if !stale_lines.is_empty() {
+            stale_lines.pop();
+        } else {
+            lines.pop();
+        }
+        text = compose(&lines, &stale_lines);
         tokens = estimate_tokens(&text);
     }
 
     InjectionPack {
-        items: lines.len(),
+        items: lines.len() + stale_lines.len(),
         text,
         tokens,
         stale: stale_count,
@@ -293,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_pages_are_pointed_at_but_not_injected() {
+    fn stale_pages_inject_flagged_summaries_after_fresh() {
         let fresh = page(
             "payments-note",
             "concept",
@@ -308,29 +342,56 @@ mod tests {
         );
         let stale: HashSet<PathBuf> = [old.path.clone()].into();
         let pack = build_pack(&[fresh, old], "main", &[], &Budget::default(), &stale, &[]);
-        assert_eq!(pack.items, 1);
+        assert_eq!(pack.items, 2, "fresh + flagged stale are both injected");
         assert_eq!(pack.stale, 1);
         assert!(
-            !pack.text.contains("Auth uses session tokens."),
-            "stale summary must not be injected: {}",
+            pack.text
+                .contains("[STALE — re-verify] Auth uses session tokens")
+                || pack
+                    .text
+                    .contains("[STALE — re-verify] old-decision — Auth uses session tokens."),
+            "stale summary must be injected with an explicit warning: {}",
             pack.text
         );
+        assert!(pack.text.contains("coopera/decisions/old-decision.md"));
+        let fresh_idx = pack.text.find("payments-note").unwrap();
+        let stale_idx = pack.text.find("old-decision").unwrap();
         assert!(
-            pack.text.contains("Stale") && pack.text.contains("coopera/decisions/old-decision.md"),
-            "stale page must be pointed at: {}",
+            fresh_idx < stale_idx,
+            "fresh pages rank first: {}",
             pack.text
         );
     }
 
     #[test]
-    fn all_stale_still_emits_pointers() {
-        let old = page("only", "concept", "\"src/\"", "Old summary.");
+    fn stale_overflow_degrades_to_pointers() {
+        let old = page(
+            "only",
+            "concept",
+            "\"src/\"",
+            "A fairly long stale summary that cannot possibly fit a tiny budget.",
+        );
         let stale: HashSet<PathBuf> = [old.path.clone()].into();
-        let pack = build_pack(&[old], "main", &[], &Budget::default(), &stale, &[]);
+        let tiny = Budget {
+            total: 400,
+            presence: 0,
+            wiki: 5,
+            instructions: 100,
+        };
+        let pack = build_pack(&[old], "main", &[], &tiny, &stale, &[]);
         assert_eq!(pack.items, 0);
         assert_eq!(pack.stale, 1);
         assert!(pack.text.contains("(no fresh pages)"));
-        assert!(pack.text.contains("coopera/concepts/only.md"));
+        assert!(
+            !pack.text.contains("cannot possibly fit"),
+            "over-budget stale summary must not be injected: {}",
+            pack.text
+        );
+        assert!(
+            pack.text.contains("Stale") && pack.text.contains("coopera/concepts/only.md"),
+            "over-budget stale page keeps its pointer: {}",
+            pack.text
+        );
     }
 
     #[test]

@@ -131,7 +131,7 @@ pub fn session_start() -> i32 {
                 msg.push_str(&format!(", {} teammate signal(s)", pack.presence_items));
             }
             if pack.stale > 0 {
-                msg.push_str(&format!(", {} stale excluded", pack.stale));
+                msg.push_str(&format!(", {} stale flagged (re-verify)", pack.stale));
             }
             if !fetched && git.has_origin() {
                 msg.push_str(" — presence fetch skipped (network)");
