@@ -77,6 +77,10 @@ fn m1_vertical_slice() {
     let codex = std::fs::read_to_string(dir.join(".codex/config.toml")).unwrap();
     assert!(codex.contains("[[hooks.SessionStart]]"), "{codex}");
     assert!(codex.contains("COOPERA_TOOL=codex"), "{codex}");
+    assert!(
+        codex.contains("COOPERA_SESSION_FALLBACK=\"ppid-$PPID\""),
+        "codex hooks need a stable session key (no session id in payloads): {codex}"
+    );
 
     // Committed hook config must stay machine-independent: no absolute paths
     // (the installer's home dir would be wrong on every teammate's machine).
@@ -529,6 +533,61 @@ fn retro_scan_skips_noise_and_drains_backlog() {
         digests.iter().any(|d| d.ends_with("nextsess.md")),
         "{digests:?}"
     );
+}
+
+/// P1 — Codex-style sessions (no session id in the hook payload) keep a
+/// stable presence key via COOPERA_SESSION_FALLBACK: the same ref is
+/// created at start, updated on prompt, and removed at end.
+#[test]
+fn fallback_session_key_covers_full_lifecycle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q"]);
+    git(dir, &["config", "user.email", "coder@example.com"]);
+    git(dir, &["config", "user.name", "Coder"]);
+    let (_, stderr, ok) = run_in(dir, &["init"], None);
+    assert!(ok, "init failed: {stderr}");
+
+    let envs: &[(&str, &str)] = &[
+        ("COOPERA_SESSION_FALLBACK", "ppid-4242"),
+        ("COOPERA_RETRO_SYNC", "1"),
+    ];
+    let refname = "refs/coopera/presence/Coder/ppid-4242";
+
+    let (_, stderr, ok) = run_in_env(dir, &["hook", "session-start"], Some("{}"), envs);
+    assert!(ok, "session-start failed: {stderr}");
+    let show = |args: &[&str]| {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            out.status.success(),
+        )
+    };
+    let (_, exists) = show(&["rev-parse", "--verify", "-q", refname]);
+    assert!(exists, "fallback key must create a presence ref");
+
+    let (_, _, ok) = run_in_env(
+        dir,
+        &["hook", "user-prompt-submit"],
+        Some(r#"{"prompt":"Wire the codex adapter"}"#),
+        envs,
+    );
+    assert!(ok);
+    let (yaml, _) = show(&["cat-file", "-p", &format!("{refname}:presence.yaml")]);
+    assert!(
+        yaml.contains("Wire the codex adapter"),
+        "intent must update via the fallback key: {yaml}"
+    );
+
+    let (_, _, ok) = run_in_env(dir, &["hook", "session-end"], Some("{}"), envs);
+    assert!(ok);
+    let (_, exists) = show(&["rev-parse", "--verify", "-q", refname]);
+    assert!(!exists, "session-end must clean up the fallback-key ref");
 }
 
 /// M2 — presence across two clones through a bare origin: publish at

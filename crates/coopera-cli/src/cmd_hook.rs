@@ -47,6 +47,22 @@ fn tool_name() -> String {
     std::env::var(TOOL_ENV).unwrap_or_else(|_| "claude-code".to_string())
 }
 
+/// Presence key for this session: the hook-provided session id, else the
+/// fallback computed by the hook command line (Codex: `ppid-$PPID`, stable
+/// across one session's hooks), else this process's own pid — a last resort
+/// that cannot survive across hook invocations.
+fn session_key(input: &HookInput) -> String {
+    input
+        .session_id
+        .clone()
+        .or_else(|| {
+            std::env::var("COOPERA_SESSION_FALLBACK")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
+        .unwrap_or_else(|| format!("pid-{}", std::process::id()))
+}
+
 fn emit(output: &HookOutput) -> i32 {
     match serde_json::to_string(output) {
         Ok(json) => {
@@ -77,10 +93,7 @@ pub fn session_start() -> i32 {
             // F5: bounded fetch, then announce this session (sync push — the
             // session boundary is the moment teammates should see us).
             let fetched = presence::fetch(&git, NET_TIMEOUT);
-            let session = input
-                .session_id
-                .clone()
-                .unwrap_or_else(|| format!("pid-{}", std::process::id()));
+            let session = session_key(&input);
             let now = jiff::Timestamp::now();
             let entry = PresenceEntry {
                 user: git.user_name(),
@@ -162,9 +175,10 @@ pub fn user_prompt_submit() -> i32 {
 
     let output = match Git::discover(&dir) {
         Ok(git) => {
-            if let (Some(prompt), Some(session)) = (&input.prompt, &input.session_id) {
+            if let Some(prompt) = &input.prompt {
+                let session = session_key(&input);
                 let user = git.user_name();
-                if let Some(mut entry) = presence::load(&git, &user, session) {
+                if let Some(mut entry) = presence::load(&git, &user, &session) {
                     let intent: String = redact(prompt)
                         .replace('\n', " ")
                         .chars()
@@ -295,9 +309,9 @@ pub fn session_end() -> i32 {
     let dir = working_dir(&input);
 
     if let Ok(git) = Git::discover(&dir) {
-        if let Some(session) = &input.session_id {
-            presence::remove(&git, &git.user_name(), session, NET_TIMEOUT);
-        }
+        // The fallback key (Codex) resolves the same value it did at
+        // session-start, so cleanup finds the ref even without a session id.
+        presence::remove(&git, &git.user_name(), &session_key(&input), NET_TIMEOUT);
         if let Some(transcript) = &input.transcript_path {
             crate::cmd_distill::append_log(
                 &git.root,

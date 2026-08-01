@@ -167,9 +167,20 @@ fn ensure_gitignore_line(root: &Path, line: &str, actions: &mut Vec<String>) -> 
 /// on PATH; when neither resolves the hook emits a valid empty reply, so
 /// teammates who cloned without installing get read-only mode with zero error
 /// noise — the partial-adoption contract (01-idea-brief).
+///
+/// Codex payloads carry no session id, so each hook invocation used to mint a
+/// new pid-based presence key: intent updates and SessionEnd cleanup never
+/// found the ref again (dead refs leaked to the remote). `$PPID` — the hook
+/// shell's parent, i.e. the codex process — is stable across one session's
+/// hooks and becomes the fallback key.
 fn guarded_command(tool: &str, sub: &str) -> String {
+    let fallback = if tool == "codex" {
+        "COOPERA_SESSION_FALLBACK=\"ppid-$PPID\" "
+    } else {
+        ""
+    };
     format!(
-        "c=\"${{COOPERA_BIN:-coopera}}\"; command -v \"$c\" >/dev/null 2>&1 && COOPERA_TOOL={tool} \"$c\" hook {sub} || echo {{}}"
+        "c=\"${{COOPERA_BIN:-coopera}}\"; command -v \"$c\" >/dev/null 2>&1 && COOPERA_TOOL={tool} {fallback}\"$c\" hook {sub} || echo {{}}"
     )
 }
 
