@@ -131,6 +131,11 @@ pub fn session_start() -> i32 {
                     " — {pending} undistilled session(s) pending (see .coopera/cache/distill.log)"
                 ));
             }
+            // P0 self-heal: drain the undistilled backlog in the background.
+            // SessionEnd is unreliable (crashes, teardown kills, hook-less
+            // tools) — the session boundary we can rely on is the next start.
+            // The lockfile inside `distill --retro` prevents double runs.
+            spawn_retro(&git.root);
             HookOutput::session_start(pack.text, Some(msg))
         }
         // Fail-open: outside a repo (or git missing) we inject nothing.
@@ -242,6 +247,26 @@ fn trigger_context(git: &Git, prompt: &str) -> (String, usize) {
         ),
         n,
     )
+}
+
+/// Kick a detached `coopera distill --retro` whose output lands in the
+/// distill log. COOPERA_RETRO_SYNC=1 runs it in the foreground instead —
+/// deterministic completion for tests and manual debugging.
+fn spawn_retro(root: &std::path::Path) {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("coopera"));
+    let mut cmd = std::process::Command::new(exe);
+    let (out, err) = distill_log_stdio(root);
+    cmd.arg("distill")
+        .arg("--retro")
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .stdout(out)
+        .stderr(err);
+    if std::env::var_os("COOPERA_RETRO_SYNC").is_some() {
+        let _ = cmd.status();
+        return;
+    }
+    let _ = coopera_core::spawn::detach(&mut cmd).spawn();
 }
 
 /// Both stdio handles pointed at the distill log (append), or null when the

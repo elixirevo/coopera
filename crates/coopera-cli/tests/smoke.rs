@@ -116,8 +116,15 @@ fn m1_vertical_slice() {
     )
     .unwrap();
 
-    // F2: SessionStart injection includes the decision, respects protocol
-    let (stdout, stderr, ok) = run_in(dir, &["hook", "session-start"], Some("{}"));
+    // F2: SessionStart injection includes the decision, respects protocol.
+    // (COOPERA_RETRO_SYNC keeps the auto-retro sweep synchronous so no
+    // background process races the test's later queue-file writes.)
+    let (stdout, stderr, ok) = run_in_env(
+        dir,
+        &["hook", "session-start"],
+        Some("{}"),
+        &[("COOPERA_RETRO_SYNC", "1")],
+    );
     assert!(ok, "hook failed: {stderr}");
     let json: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("hook output must be JSON");
@@ -135,13 +142,19 @@ fn m1_vertical_slice() {
         "visibility line required: {msg}"
     );
 
-    // P0: an undistilled backlog is surfaced in the visibility line.
+    // P0: an undistilled backlog is surfaced in the visibility line (the
+    // count is read before the auto-retro sweep clears dead entries).
     std::fs::write(
         dir.join(".coopera/cache/undistilled.log"),
         "/nonexistent/transcript.jsonl\n",
     )
     .unwrap();
-    let (stdout, _, ok) = run_in(dir, &["hook", "session-start"], Some("{}"));
+    let (stdout, _, ok) = run_in_env(
+        dir,
+        &["hook", "session-start"],
+        Some("{}"),
+        &[("COOPERA_RETRO_SYNC", "1")],
+    );
     assert!(ok);
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert!(
@@ -436,6 +449,30 @@ fn retro_scan_skips_noise_and_drains_backlog() {
     )
     .unwrap();
 
+    // A live lock blocks the whole run (no distills, no queue mutation).
+    let lock = dir.join(".coopera/cache/retro.lock");
+    std::fs::write(&lock, "pid 0\n").unwrap();
+    let (_, stderr, ok) = run_in_env(
+        dir,
+        &["distill", "--retro"],
+        None,
+        &[("HOME", home.path().to_str().unwrap())],
+    );
+    assert!(ok);
+    assert!(
+        stderr.contains("another retro run is active"),
+        "live lock must skip the run: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read_dir(dir.join("coopera/sessions"))
+            .unwrap()
+            .count(),
+        0,
+        "no distillation may happen under a live lock"
+    );
+
+    // A stale lock (crashed run) is broken and the sweep proceeds.
+    age(&lock);
     let (_, stderr, ok) = run_in_env(
         dir,
         &["distill", "--retro"],
@@ -460,6 +497,37 @@ fn retro_scan_skips_noise_and_drains_backlog() {
     assert!(
         queue.trim().is_empty(),
         "dead queue entry must be cleared: {queue}"
+    );
+    assert!(!lock.exists(), "lock must be released after the run");
+
+    // P0 self-heal: the next session start drains new backlog automatically
+    // (COOPERA_RETRO_SYNC=1 makes the spawn synchronous for determinism).
+    let real2 = store.join("nextsess-5555.jsonl");
+    std::fs::write(&real2, backlog_transcript()).unwrap();
+    age(&real2);
+    let (_, stderr, ok) = run_in_env(
+        dir,
+        &["hook", "session-start"],
+        Some("{}"),
+        &[
+            ("HOME", home.path().to_str().unwrap()),
+            ("COOPERA_RETRO_SYNC", "1"),
+        ],
+    );
+    assert!(ok, "session-start failed: {stderr}");
+    let digests: Vec<String> = std::fs::read_dir(dir.join("coopera/sessions"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        digests.len(),
+        2,
+        "session start must drain the new backlog: {digests:?}"
+    );
+    assert!(
+        digests.iter().any(|d| d.ends_with("nextsess.md")),
+        "{digests:?}"
     );
 }
 

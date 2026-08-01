@@ -57,11 +57,79 @@ const ACTIVE_MTIME_SECS: u64 = 10 * 60;
 /// when the transcript has been quiet (user thinking, long tool run).
 const ACTIVE_PRESENCE_SECS: i64 = 30 * 60;
 
+/// A lock this old belongs to a crashed run — break it. Kept above the worst
+/// honest case (one distillation ≤ 600s; mtime is refreshed between items).
+const LOCK_STALE_SECS: u64 = 30 * 60;
+
+fn lock_path(root: &Path) -> PathBuf {
+    root.join(".coopera/cache/retro.lock")
+}
+
+/// Cross-process guard: one retro run per repo. Session starts spawn retro
+/// unconditionally; without this, parallel sessions would double-distill the
+/// same backlog (and double-spend agent calls).
+struct RetroLock {
+    path: PathBuf,
+}
+
+impl RetroLock {
+    fn acquire(root: &Path) -> Option<RetroLock> {
+        let path = lock_path(root);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        for _ in 0..2 {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut f) => {
+                    let _ = writeln!(f, "pid {}", std::process::id());
+                    return Some(RetroLock { path });
+                }
+                Err(_) => {
+                    let stale = path
+                        .metadata()
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|m| std::time::SystemTime::now().duration_since(m).ok())
+                        .map(|age| age.as_secs() > LOCK_STALE_SECS)
+                        // Metadata unreadable = lock vanished mid-check: retry.
+                        .unwrap_or(true);
+                    if !stale {
+                        return None;
+                    }
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+        None
+    }
+
+    /// Refresh mtime so a long (but honest) run is not mistaken for stale.
+    fn touch(&self) {
+        if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&self.path) {
+            let _ = f.set_modified(std::time::SystemTime::now());
+        }
+    }
+}
+
+impl Drop for RetroLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 /// F9 — retroactive distillation, the universal fallback for crashed
 /// sessions and hook-less tools (Antigravity). Two sources: the failure
 /// queue, and a scan of the Claude Code transcript store for sessions that
 /// never produced a digest.
 fn run_retro(git: &Git) -> i32 {
+    let Some(lock) = RetroLock::acquire(&git.root) else {
+        eprintln!("coopera distill --retro: another retro run is active — skipping");
+        return 0;
+    };
     let mut done = 0usize;
     let mut seen = 0usize;
     let mut attempts = 0usize;
@@ -86,6 +154,7 @@ fn run_retro(git: &Git) -> i32 {
             }
             Err(e) => eprintln!("coopera distill --retro: {transcript}: {e:#}"),
         }
+        lock.touch();
     }
 
     for path in scan_undistilled(git, RETRO_MAX_PER_RUN.saturating_sub(attempts)) {
@@ -97,12 +166,19 @@ fn run_retro(git: &Git) -> i32 {
             }
             Err(e) => eprintln!("coopera distill --retro: {}: {e:#}", path.display()),
         }
+        lock.touch();
     }
 
     if seen == 0 {
-        eprintln!("coopera distill --retro: nothing to do");
+        eprintln!(
+            "[{}] coopera distill --retro: nothing to do",
+            jiff::Timestamp::now()
+        );
     } else {
-        eprintln!("coopera distill --retro: {done}/{seen} processed");
+        eprintln!(
+            "[{}] coopera distill --retro: {done}/{seen} processed",
+            jiff::Timestamp::now()
+        );
     }
     0
 }
