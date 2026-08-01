@@ -252,15 +252,16 @@ JSON
     let edited = dir.join("src/payments/retry.rs");
     std::fs::create_dir_all(edited.parent().unwrap()).unwrap();
     std::fs::write(&edited, "// wip\n").unwrap();
+    let edit_line = format!(
+        r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"I will refactor the retry logic."}},{{"type":"tool_use","name":"Edit","input":{{"file_path":"{}"}}}}]}}}}"#,
+        edited.display()
+    );
     std::fs::write(
         &transcript,
         format!(
             "{}\n{}\n{}\n{}\n",
             r#"{"type":"user","message":{"role":"user","content":"Make payment retries idempotent"}}"#,
-            format!(
-                r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"I will refactor the retry logic."}},{{"type":"tool_use","name":"Edit","input":{{"file_path":"{}"}}}}]}}}}"#,
-                edited.display()
-            ),
+            edit_line,
             r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Also add tests"}]}}"#,
             r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done. We chose DB unique constraints."}]}}"#,
         ),
