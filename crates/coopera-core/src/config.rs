@@ -44,7 +44,10 @@ impl Default for Distill {
         Self {
             command: "claude".to_string(),
             args: vec!["-p".to_string()],
-            timeout_secs: 180,
+            // Real distillations of large sessions measured ~102s on
+            // 2026-08-02; 180s left too little headroom for model/API
+            // variance and killed runs that would have succeeded.
+            timeout_secs: 600,
             min_messages: 3,
         }
     }
@@ -85,5 +88,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = Config::load(dir.path());
         assert_eq!(c.budget.total, 1500);
+        assert_eq!(c.distill.timeout_secs, 600);
     }
 }

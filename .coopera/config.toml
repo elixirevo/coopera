@@ -5,3 +5,10 @@ total = 1500
 presence = 300
 wiki = 800
 instructions = 200
+
+# [distill]
+# Session distillation runs your own agent headlessly (prompt on stdin).
+# command = "claude"
+# args = ["-p"]                # cheaper/faster: ["-p", "--model", "claude-haiku-4-5"]
+# timeout_secs = 600
+# min_messages = 3             # sessions with fewer messages are skipped

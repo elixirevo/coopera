@@ -23,7 +23,14 @@ const CONFIG_TEMPLATE: &str = "\
 total = 1500\n\
 presence = 300\n\
 wiki = 800\n\
-instructions = 200\n";
+instructions = 200\n\
+\n\
+# [distill]\n\
+# Session distillation runs your own agent headlessly (prompt on stdin).\n\
+# command = \"claude\"\n\
+# args = [\"-p\"]                # cheaper/faster: [\"-p\", \"--model\", \"claude-haiku-4-5\"]\n\
+# timeout_secs = 600\n\
+# min_messages = 3             # sessions with fewer messages are skipped\n";
 
 const INDEX_TEMPLATE: &str = "\
 # Wiki index\n\n\
