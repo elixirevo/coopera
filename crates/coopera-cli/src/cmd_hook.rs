@@ -79,6 +79,7 @@ pub fn session_start() -> i32 {
     if std::env::var_os(DISTILL_ENV).is_some() {
         return emit(&HookOutput::session_start(String::new(), None));
     }
+    let t0 = std::time::Instant::now();
     let input = read_input();
     let dir = working_dir(&input);
 
@@ -148,6 +149,18 @@ pub fn session_start() -> i32 {
                     " — {pending} undistilled session(s) pending (see .coopera/cache/distill.log)"
                 ));
             }
+            coopera_core::metrics::record(
+                &git.root,
+                "inject",
+                &[
+                    ("source", "session-start".into()),
+                    ("items", (pack.items as u64).into()),
+                    ("tokens", (pack.tokens as u64).into()),
+                    ("stale", (pack.stale as u64).into()),
+                    ("presence_items", (pack.presence_items as u64).into()),
+                    ("latency_ms", (t0.elapsed().as_millis() as u64).into()),
+                ],
+            );
             // P0 self-heal: drain the undistilled backlog in the background.
             // SessionEnd is unreliable (crashes, teardown kills, hook-less
             // tools) — the session boundary we can rely on is the next start.
@@ -174,6 +187,7 @@ pub fn user_prompt_submit() -> i32 {
             None,
         ));
     }
+    let t0 = std::time::Instant::now();
     let input = read_input();
     let dir = working_dir(&input);
 
@@ -208,6 +222,21 @@ pub fn user_prompt_submit() -> i32 {
             } else {
                 None
             };
+            if hits > 0 {
+                coopera_core::metrics::record(
+                    &git.root,
+                    "inject",
+                    &[
+                        ("source", "prompt".into()),
+                        ("items", (hits as u64).into()),
+                        (
+                            "tokens",
+                            (coopera_core::inject::estimate_tokens(&context) as u64).into(),
+                        ),
+                        ("latency_ms", (t0.elapsed().as_millis() as u64).into()),
+                    ],
+                );
+            }
             HookOutput::for_event("UserPromptSubmit", context, msg)
         }
         Err(_) => HookOutput::for_event("UserPromptSubmit", String::new(), None),

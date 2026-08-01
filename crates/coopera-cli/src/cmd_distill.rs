@@ -41,6 +41,7 @@ pub fn run(transcript: Option<&str>, session: Option<&str>, retro: bool) -> i32 
             0
         }
         Err(e) => {
+            record_distill_error(&git.root, &e);
             eprintln!("coopera distill: failed ({e:#}) — kept in retro queue");
             0
         }
@@ -152,7 +153,10 @@ fn run_retro(git: &Git) -> i32 {
                 eprintln!("{summary}");
                 done += 1;
             }
-            Err(e) => eprintln!("coopera distill --retro: {transcript}: {e:#}"),
+            Err(e) => {
+                record_distill_error(&git.root, &e);
+                eprintln!("coopera distill --retro: {transcript}: {e:#}");
+            }
         }
         lock.touch();
     }
@@ -164,7 +168,10 @@ fn run_retro(git: &Git) -> i32 {
                 eprintln!("{summary}");
                 done += 1;
             }
-            Err(e) => eprintln!("coopera distill --retro: {}: {e:#}", path.display()),
+            Err(e) => {
+                record_distill_error(&git.root, &e);
+                eprintln!("coopera distill --retro: {}: {e:#}", path.display());
+            }
         }
         lock.touch();
     }
@@ -282,7 +289,14 @@ fn head_snippet(path: &Path, bytes: usize) -> String {
     String::from_utf8_lossy(&buf).into_owned()
 }
 
+/// Truncated error record — the metrics file is a counter, not a log.
+fn record_distill_error(root: &Path, e: &anyhow::Error) {
+    let msg: String = format!("{e:#}").chars().take(200).collect();
+    coopera_core::metrics::record(root, "distill_error", &[("error", msg.into())]);
+}
+
 fn distill_one(git: &Git, transcript_path: &Path, session: Option<&str>) -> Result<String> {
+    let t0 = std::time::Instant::now();
     let config = Config::load(&git.root);
     let raw = std::fs::read_to_string(transcript_path)
         .with_context(|| format!("cannot read transcript {}", transcript_path.display()))?;
@@ -351,6 +365,16 @@ fn distill_one(git: &Git, transcript_path: &Path, session: Option<&str>) -> Resu
 
     // Code-PR ride-along: stage so the next commit carries the wiki change.
     git.add(&staged)?;
+    coopera_core::metrics::record(
+        &git.root,
+        "distill",
+        &[
+            ("decisions", (resp.decisions.len() as u64).into()),
+            ("learnings", (resp.learnings.len() as u64).into()),
+            ("wiki_diff", ((staged.len() - 1) as u64).into()),
+            ("duration_ms", (t0.elapsed().as_millis() as u64).into()),
+        ],
+    );
     Ok(format!(
         "coopera distill: {digest_rel} ({} decision(s), {} learning(s)){drafts_note}",
         resp.decisions.len(),

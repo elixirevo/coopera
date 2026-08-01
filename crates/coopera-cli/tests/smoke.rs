@@ -146,6 +146,13 @@ fn m1_vertical_slice() {
         "visibility line required: {msg}"
     );
 
+    // P2: injection is instrumented locally.
+    let metrics = std::fs::read_to_string(dir.join(".coopera/cache/metrics.jsonl")).unwrap();
+    assert!(
+        metrics.lines().any(|l| l.contains("\"event\":\"inject\"")),
+        "inject event must be recorded: {metrics}"
+    );
+
     // P0: an undistilled backlog is surfaced in the visibility line (the
     // count is read before the auto-retro sweep clears dead entries).
     std::fs::write(
@@ -334,6 +341,13 @@ JSON
     assert!(
         !queue.contains("abcd1234"),
         "queue must be cleared on success: {queue}"
+    );
+
+    // P2: distillation is instrumented locally.
+    let metrics = std::fs::read_to_string(dir.join(".coopera/cache/metrics.jsonl")).unwrap();
+    assert!(
+        metrics.lines().any(|l| l.contains("\"event\":\"distill\"")),
+        "distill event must be recorded: {metrics}"
     );
 }
 

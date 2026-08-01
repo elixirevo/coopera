@@ -11,6 +11,7 @@ pub mod distill;
 pub mod gitio;
 pub mod hookio;
 pub mod inject;
+pub mod metrics;
 pub mod presence;
 pub mod redact;
 pub mod spawn;
