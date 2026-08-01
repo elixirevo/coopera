@@ -244,7 +244,7 @@ pub fn extract_codex_rollout(jsonl: &str, repo_root: &Path) -> TranscriptExcerpt
                     continue;
                 };
                 for fp in patch_paths(input) {
-                    let abs = if Path::new(&fp).is_relative() && !session_cwd.is_empty() {
+                    let abs = if needs_cwd(&fp) && !session_cwd.is_empty() {
                         format!("{session_cwd}/{fp}")
                     } else {
                         fp
@@ -264,6 +264,14 @@ pub fn extract_codex_rollout(jsonl: &str, repo_root: &Path) -> TranscriptExcerpt
         touched,
         messages,
     }
+}
+
+/// Whether an apply_patch path needs resolving against the session cwd.
+/// Not `Path::is_relative`: that is host-platform semantics, and on Windows
+/// a rollout's Unix-style absolute path ("/repo/src/x.rs") has no drive
+/// prefix and would misclassify as relative.
+fn needs_cwd(p: &str) -> bool {
+    !p.starts_with('/') && !p.starts_with('\\') && Path::new(p).is_relative()
 }
 
 /// File paths named by an apply_patch envelope (`*** Update File: x` etc.).
