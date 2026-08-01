@@ -92,33 +92,208 @@ pub fn extract_transcript(jsonl: &str, repo_root: &Path) -> TranscriptExcerpt {
             }
             _ => {}
         }
-        let text = text.trim();
-        if text.is_empty() {
-            continue;
-        }
-        messages += 1;
-        let mut t: String = text.chars().take(MAX_MESSAGE_CHARS).collect();
-        if text.chars().count() > MAX_MESSAGE_CHARS {
-            t.push_str(" [...]");
-        }
-        out_lines.push(format!("{role}: {t}"));
-    }
-
-    let mut conversation = out_lines.join("\n\n");
-    if conversation.chars().count() > MAX_EXCERPT_CHARS {
-        // Keep the head (intent lives there) and the tail (latest decisions).
-        let chars: Vec<char> = conversation.chars().collect();
-        let head: String = chars[..HEAD_CHARS].iter().collect();
-        let tail_start = chars.len() - (MAX_EXCERPT_CHARS - HEAD_CHARS);
-        let tail: String = chars[tail_start..].iter().collect();
-        conversation = format!("{head}\n\n[... middle of session truncated ...]\n\n{tail}");
+        push_role_line(&mut out_lines, &mut messages, role, text.trim());
     }
 
     TranscriptExcerpt {
-        conversation,
+        conversation: clamp_conversation(out_lines.join("\n\n")),
         touched,
         messages,
     }
+}
+
+/// Append one "ROLE: text" line, truncated to MAX_MESSAGE_CHARS.
+fn push_role_line(out: &mut Vec<String>, messages: &mut usize, role: &str, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    *messages += 1;
+    let mut t: String = text.chars().take(MAX_MESSAGE_CHARS).collect();
+    if text.chars().count() > MAX_MESSAGE_CHARS {
+        t.push_str(" [...]");
+    }
+    out.push(format!("{role}: {t}"));
+}
+
+/// Cap the whole excerpt, keeping the head (intent lives there) and the
+/// tail (latest decisions).
+fn clamp_conversation(conversation: String) -> String {
+    if conversation.chars().count() <= MAX_EXCERPT_CHARS {
+        return conversation;
+    }
+    let chars: Vec<char> = conversation.chars().collect();
+    let head: String = chars[..HEAD_CHARS].iter().collect();
+    let tail_start = chars.len() - (MAX_EXCERPT_CHARS - HEAD_CHARS);
+    let tail: String = chars[tail_start..].iter().collect();
+    format!("{head}\n\n[... middle of session truncated ...]\n\n{tail}")
+}
+
+/// System-injected packets Codex records with `role: user` — context, not
+/// something the developer typed. Matched by prefix on the trimmed text;
+/// real user messages that merely start with '<' (pasted HTML) or mention
+/// AGENTS.md do not match these. Surveyed across real rollouts 2026-08-02.
+const CODEX_SYSTEM_PREFIXES: [&str; 8] = [
+    "<environment_context>",
+    "<user_instructions>",
+    "<turn_aborted>",
+    "<goal_context>",
+    "<codex_internal_context>",
+    "<subagent_notification>",
+    "<recommended_plugins>",
+    "# AGENTS.md instructions for ",
+];
+
+/// Codex rollout identity, read from the mandatory session_meta first line.
+#[derive(Debug)]
+pub struct CodexMeta {
+    pub id: String,
+    /// Session working directory — the only way to match a rollout to a repo
+    /// (the store is date-keyed, not repo-keyed like Claude's).
+    pub cwd: String,
+}
+
+/// Parse the session_meta line that opens every Codex rollout
+/// (`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`). Returns None for
+/// anything else — including Claude Code transcripts — so this doubles as
+/// the format detector. Works on a truncated head as long as the first line
+/// is complete (real first lines run 12–44KB: they embed base instructions).
+/// Shape verified against real rollouts (cli 0.104 and 0.146) on 2026-08-02.
+pub fn codex_meta(head: &str) -> Option<CodexMeta> {
+    let first = head.lines().find(|l| !l.trim().is_empty())?;
+    let v: serde_json::Value = serde_json::from_str(first).ok()?;
+    if v.get("type").and_then(|t| t.as_str()) != Some("session_meta") {
+        return None;
+    }
+    let p = v.get("payload")?;
+    let field = |k: &str| {
+        p.get(k)
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let mut id = field("id");
+    if id.is_empty() {
+        id = field("session_id");
+    }
+    Some(CodexMeta {
+        id,
+        cwd: field("cwd"),
+    })
+}
+
+/// Extract a distillable excerpt from a Codex rollout. The durable
+/// conversation lives in `response_item` lines; `event_msg` lines duplicate
+/// it for UI streaming and are skipped, as are reasoning items and
+/// developer-role prompts. Touched files come from apply_patch envelopes
+/// (mechanical, like the Claude Code path). Lenient: unknown shapes skip.
+pub fn extract_codex_rollout(jsonl: &str, repo_root: &Path) -> TranscriptExcerpt {
+    let root_canon = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf());
+    // The session cwd resolves relative apply_patch paths — it may be a
+    // subdirectory of the repo, so repo_root alone is not enough.
+    let session_cwd = codex_meta(jsonl).map(|m| m.cwd).unwrap_or_default();
+    let mut out_lines: Vec<String> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+    let mut messages = 0usize;
+
+    for line in jsonl.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("response_item") {
+            continue;
+        }
+        let Some(p) = v.get("payload") else { continue };
+        match p.get("type").and_then(|t| t.as_str()) {
+            Some("message") => {
+                let role = match p.get("role").and_then(|r| r.as_str()) {
+                    Some("user") => "USER",
+                    Some("assistant") => "ASSISTANT",
+                    _ => continue, // developer: system prompts, not conversation
+                };
+                let mut text = String::new();
+                if let Some(blocks) = p.get("content").and_then(|c| c.as_array()) {
+                    for b in blocks {
+                        let bt = b.get("type").and_then(|t| t.as_str());
+                        if !matches!(bt, Some("input_text") | Some("output_text")) {
+                            continue;
+                        }
+                        if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
+                            if !text.is_empty() {
+                                text.push('\n');
+                            }
+                            text.push_str(t);
+                        }
+                    }
+                }
+                let text = text.trim();
+                if role == "USER"
+                    && CODEX_SYSTEM_PREFIXES
+                        .iter()
+                        .any(|pre| text.starts_with(pre))
+                {
+                    continue; // injected context packet
+                }
+                push_role_line(&mut out_lines, &mut messages, role, text);
+            }
+            Some("custom_tool_call")
+                if p.get("name").and_then(|n| n.as_str()) == Some("apply_patch") =>
+            {
+                let Some(input) = p.get("input").and_then(|i| i.as_str()) else {
+                    continue;
+                };
+                for fp in patch_paths(input) {
+                    let abs = if needs_cwd(&fp) && !session_cwd.is_empty() {
+                        format!("{session_cwd}/{fp}")
+                    } else {
+                        fp
+                    };
+                    let rel = relativize(&abs, repo_root, &root_canon);
+                    if !touched.contains(&rel) {
+                        touched.push(rel);
+                    }
+                }
+            }
+            _ => {} // reasoning, exec calls, tool outputs: skipped
+        }
+    }
+
+    TranscriptExcerpt {
+        conversation: clamp_conversation(out_lines.join("\n\n")),
+        touched,
+        messages,
+    }
+}
+
+/// Whether an apply_patch path needs resolving against the session cwd.
+/// Not `Path::is_relative`: that is host-platform semantics, and on Windows
+/// a rollout's Unix-style absolute path ("/repo/src/x.rs") has no drive
+/// prefix and would misclassify as relative.
+fn needs_cwd(p: &str) -> bool {
+    !p.starts_with('/') && !p.starts_with('\\') && Path::new(p).is_relative()
+}
+
+/// File paths named by an apply_patch envelope (`*** Update File: x` etc.).
+fn patch_paths(patch: &str) -> Vec<String> {
+    const VERBS: [&str; 4] = [
+        "*** Update File: ",
+        "*** Add File: ",
+        "*** Delete File: ",
+        "*** Move to: ",
+    ];
+    let mut paths = Vec::new();
+    for line in patch.lines() {
+        for verb in VERBS {
+            if let Some(p) = line.strip_prefix(verb) {
+                let p = p.trim();
+                if !p.is_empty() {
+                    paths.push(p.to_string());
+                }
+            }
+        }
+    }
+    paths
 }
 
 /// Make a transcript file path repo-relative, resolving symlinks when the
@@ -469,6 +644,94 @@ mod tests {
         assert!(
             !ex.conversation.contains("secret plan"),
             "thinking must be skipped"
+        );
+    }
+
+    /// Line shapes copied from a real rollout (cli 0.146.0, 2026-08-01):
+    /// session_meta first line, response_item message/reasoning/tool calls,
+    /// event_msg streaming duplicates.
+    fn codex_fixture(root: &str) -> String {
+        [
+            format!(
+                r#"{{"timestamp":"2026-08-01T10:00:00.000Z","type":"session_meta","payload":{{"session_id":"019fbce9-5e5d-7400-a2d0-712fae5c5006","id":"019fbce9-5e5d-7400-a2d0-712fae5c5006","cwd":"{root}/sub","originator":"codex-tui","cli_version":"0.146.0"}}}}"#
+            ),
+            r#"{"timestamp":"t","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions instructions>sandboxing rules</permissions instructions>"}]}}"#.to_string(),
+            format!(
+                r#"{{"timestamp":"t","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"<environment_context><cwd>{root}/sub</cwd></environment_context>"}}]}}}}"#
+            ),
+            format!(
+                r##"{{"timestamp":"t","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"# AGENTS.md instructions for {root}\n\n<INSTRUCTIONS>project rules</INSTRUCTIONS>"}}]}}}}"##
+            ),
+            r#"{"timestamp":"t","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Wire the Codex store into the retro scan"}]}}"#.to_string(),
+            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"user_message","message":"Wire the Codex store into the retro scan","images":[]}}"#.to_string(),
+            r#"{"timestamp":"t","type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"secret plan"}]}}"#.to_string(),
+            format!(
+                r#"{{"timestamp":"t","type":"response_item","payload":{{"type":"custom_tool_call","status":"completed","call_id":"c1","name":"apply_patch","input":"*** Begin Patch\n*** Update File: {root}/src/scan.rs\n@@\n-a\n+b\n*** Add File: notes.md\n+hi\n*** End Patch\n"}}}}"#
+            ),
+            r#"{"timestamp":"t","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"command\":\"ls\"}"}}"#.to_string(),
+            r#"{"timestamp":"t","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done. Retro now drains Codex rollouts."}],"phase":"final_answer"}}"#.to_string(),
+            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"agent_message","message":"Done. Retro now drains Codex rollouts.","phase":"final_answer"}}"#.to_string(),
+            r#"{"timestamp":"t","type":"turn_context","payload":{"cwd":"/elsewhere"}}"#.to_string(),
+        ]
+        .join("\n")
+    }
+
+    #[test]
+    fn codex_meta_detects_rollouts_only() {
+        let m = codex_meta(&codex_fixture("/repo")).expect("session_meta first line");
+        assert_eq!(m.id, "019fbce9-5e5d-7400-a2d0-712fae5c5006");
+        assert_eq!(m.cwd, "/repo/sub");
+        assert!(
+            codex_meta(&fixture_jsonl("/repo")).is_none(),
+            "Claude transcripts are not rollouts"
+        );
+        // Older CLIs (0.104) had no session_id field — id alone must do.
+        let old = r#"{"timestamp":"t","type":"session_meta","payload":{"id":"019c75cb-7cd1-7dd2-ae73-5b7e39e5e7bf","cwd":"/w","originator":"Codex Desktop","cli_version":"0.104.0-alpha.1"}}"#;
+        assert_eq!(
+            codex_meta(old).unwrap().id,
+            "019c75cb-7cd1-7dd2-ae73-5b7e39e5e7bf"
+        );
+    }
+
+    #[test]
+    fn extracts_codex_rollout_conversation_and_touched() {
+        let ex = extract_codex_rollout(&codex_fixture("/repo"), Path::new("/repo"));
+        assert_eq!(
+            ex.messages, 2,
+            "event_msg duplicates and system packets must not count: {}",
+            ex.conversation
+        );
+        assert_eq!(
+            ex.touched,
+            vec!["src/scan.rs", "sub/notes.md"],
+            "absolute paths relativize; relative paths resolve via session cwd"
+        );
+        assert_eq!(
+            ex.conversation
+                .matches("USER: Wire the Codex store into the retro scan")
+                .count(),
+            1,
+            "streaming duplicate must be dropped: {}",
+            ex.conversation
+        );
+        assert!(ex
+            .conversation
+            .contains("ASSISTANT: Done. Retro now drains"));
+        assert!(
+            !ex.conversation.contains("environment_context"),
+            "injected context packets are not conversation"
+        );
+        assert!(
+            !ex.conversation.contains("AGENTS.md instructions"),
+            "injected AGENTS.md packets are not conversation"
+        );
+        assert!(
+            !ex.conversation.contains("permissions instructions"),
+            "developer prompts are not conversation"
+        );
+        assert!(
+            !ex.conversation.contains("secret plan"),
+            "reasoning must be skipped"
         );
     }
 

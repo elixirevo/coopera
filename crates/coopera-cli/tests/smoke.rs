@@ -550,6 +550,147 @@ fn retro_scan_skips_noise_and_drains_backlog() {
     );
 }
 
+/// Retro scan, Codex store: rollouts under ~/.codex/sessions/YYYY/MM/DD/
+/// are matched to the repo via the session_meta cwd (the store is
+/// date-keyed), distilled with tool "codex" and apply_patch-derived touched
+/// files, and deduped by session-id prefix on later runs. Foreign-repo
+/// rollouts are untouched.
+#[cfg(unix)]
+#[test]
+fn retro_scan_covers_codex_rollouts() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q"]);
+    git(dir, &["config", "user.email", "tester@example.com"]);
+    git(dir, &["config", "user.name", "Tester"]);
+    let (_, stderr, ok) = run_in(dir, &["init"], None);
+    assert!(ok, "init failed: {stderr}");
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-qm", "seed"]);
+
+    let stub = dir.join("stub-agent.sh");
+    std::fs::write(
+        &stub,
+        "#!/bin/sh\ncat > /dev/null\ncat <<'JSON'\n{\"intent\":\"Codex session on this repo\",\"decisions\":[\"Ship the Codex extractor\"],\"learnings\":[],\"wiki_pages\":[]}\nJSON\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let config_path = dir.join(".coopera/config.toml");
+    let mut config = std::fs::read_to_string(&config_path).unwrap();
+    config.push_str(&format!(
+        "\n[distill]\ncommand = \"{}\"\nargs = []\n",
+        stub.display()
+    ));
+    std::fs::write(&config_path, config).unwrap();
+
+    // The repo root exactly as the scanner sees it (symlink-resolved).
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .unwrap();
+    let root = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let edited = dir.join("src/scan.rs");
+    std::fs::create_dir_all(edited.parent().unwrap()).unwrap();
+    std::fs::write(&edited, "// wip\n").unwrap();
+
+    // Date-keyed store under a fake HOME, with real rollout line shapes.
+    let home = tempfile::tempdir().unwrap();
+    let day = home.path().join(".codex/sessions/2026/08/01");
+    std::fs::create_dir_all(&day).unwrap();
+    let rollout = |id: &str, cwd: &str| {
+        [
+            format!(
+                r#"{{"timestamp":"2026-08-01T10:00:00.000Z","type":"session_meta","payload":{{"id":"{id}","cwd":"{cwd}","originator":"codex-tui","cli_version":"0.146.0"}}}}"#
+            ),
+            r#"{"timestamp":"t","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"You are Codex."}]}}"#.to_string(),
+            format!(
+                r#"{{"timestamp":"t","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"<environment_context><cwd>{cwd}</cwd></environment_context>"}}]}}}}"#
+            ),
+            r#"{"timestamp":"t","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Wire the Codex store into the retro scan"}]}}"#.to_string(),
+            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"user_message","message":"Wire the Codex store into the retro scan","images":[]}}"#.to_string(),
+            format!(
+                r#"{{"timestamp":"t","type":"response_item","payload":{{"type":"custom_tool_call","status":"completed","call_id":"c1","name":"apply_patch","input":"*** Begin Patch\n*** Update File: {cwd}/src/scan.rs\n@@\n-a\n+b\n*** End Patch\n"}}}}"#
+            ),
+            r#"{"timestamp":"t","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Patched the scanner."}],"phase":"commentary"}}"#.to_string(),
+            r#"{"timestamp":"t","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Now verify it"}]}}"#.to_string(),
+            r#"{"timestamp":"t","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done. Retro now drains Codex rollouts."}],"phase":"final_answer"}}"#.to_string(),
+            pad_line(),
+        ]
+        .join("\n")
+    };
+
+    let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    let age = |p: &Path| {
+        std::fs::File::options()
+            .write(true)
+            .open(p)
+            .unwrap()
+            .set_modified(hour_ago)
+            .unwrap();
+    };
+    let ours = day.join("rollout-2026-08-01T10-00-00-0199aaaa-1111-7abc-8def-000000000001.jsonl");
+    std::fs::write(
+        &ours,
+        rollout("0199aaaa-1111-7abc-8def-000000000001", &root),
+    )
+    .unwrap();
+    age(&ours);
+    let foreign =
+        day.join("rollout-2026-08-01T09-00-00-0199bbbb-2222-7abc-8def-000000000002.jsonl");
+    std::fs::write(
+        &foreign,
+        rollout("0199bbbb-2222-7abc-8def-000000000002", "/nowhere/else"),
+    )
+    .unwrap();
+    age(&foreign);
+
+    let (_, stderr, ok) = run_in_env(
+        dir,
+        &["distill", "--retro"],
+        None,
+        &[("HOME", home.path().to_str().unwrap())],
+    );
+    assert!(ok, "retro failed: {stderr}");
+
+    let digests: Vec<String> = std::fs::read_dir(dir.join("coopera/sessions"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        digests.len(),
+        1,
+        "only the this-repo rollout distills: {digests:?} — {stderr}"
+    );
+    assert!(
+        digests[0].ends_with("-0199aaaa.md"),
+        "digest must be keyed by the rollout session id, not the filename: {digests:?}"
+    );
+    let digest = std::fs::read_to_string(dir.join("coopera/sessions").join(&digests[0])).unwrap();
+    assert!(digest.contains("(codex)"), "tool must be codex: {digest}");
+    assert!(
+        digest.contains("touched: src/scan.rs"),
+        "apply_patch paths must be repo-relative: {digest}"
+    );
+
+    // Dedup by session-id prefix: a second run finds nothing new.
+    let (_, stderr, ok) = run_in_env(
+        dir,
+        &["distill", "--retro"],
+        None,
+        &[("HOME", home.path().to_str().unwrap())],
+    );
+    assert!(ok, "second retro failed: {stderr}");
+    assert!(
+        stderr.contains("nothing to do"),
+        "distilled rollout must not re-distill: {stderr}"
+    );
+}
+
 /// Decision 003 — the session's hosting tool selects its own distiller
 /// agent ([distill.agents.<tool>]), and the COOPERA_OUT placeholder routes
 /// the reply through a temp file (the codex exec shape) instead of stdout.

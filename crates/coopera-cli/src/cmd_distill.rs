@@ -68,6 +68,16 @@ const ACTIVE_PRESENCE_SECS: i64 = 30 * 60;
 /// honest case (one distillation ≤ 600s; mtime is refreshed between items).
 const LOCK_STALE_SECS: u64 = 30 * 60;
 
+/// Below this size a transcript is assumed to hold no distillable substance.
+const MIN_TRANSCRIPT_BYTES: u64 = 16 * 1024;
+/// Transcripts older than this are history, not backlog.
+const MAX_TRANSCRIPT_AGE: Duration = Duration::from_secs(14 * 24 * 3600);
+/// Head bytes sniffed from a Codex rollout. The session_meta first line
+/// alone runs 12–44KB in real rollouts (it embeds the agent's base
+/// instructions), and the distiller-marker check needs to see past it into
+/// the first user message.
+const CODEX_HEAD_BYTES: usize = 128 * 1024;
+
 fn lock_path(root: &Path) -> PathBuf {
     root.join(".coopera/cache/retro.lock")
 }
@@ -130,8 +140,8 @@ impl Drop for RetroLock {
 
 /// F9 — retroactive distillation, the universal fallback for crashed
 /// sessions and hook-less tools (Antigravity). Two sources: the failure
-/// queue, and a scan of the Claude Code transcript store for sessions that
-/// never produced a digest.
+/// queue, and a scan of the Claude Code and Codex transcript stores for
+/// sessions that never produced a digest.
 fn run_retro(git: &Git) -> i32 {
     let Some(lock) = RetroLock::acquire(&git.root) else {
         eprintln!("coopera distill --retro: another retro run is active — skipping");
@@ -167,11 +177,11 @@ fn run_retro(git: &Git) -> i32 {
         lock.touch();
     }
 
-    // The scan covers the Claude Code store only, so its finds are
-    // claude-code sessions (Codex rollouts need their own extractor).
-    for path in scan_undistilled(git, RETRO_MAX_PER_RUN.saturating_sub(attempts)) {
+    // Each scan find carries its hosting tool, so a Codex rollout distills
+    // via its own agent (decision 003) just like queued sessions do.
+    for (path, tool) in scan_undistilled(git, RETRO_MAX_PER_RUN.saturating_sub(attempts)) {
         seen += 1;
-        match distill_one(git, &path, None, "claude-code") {
+        match distill_one(git, &path, None, tool) {
             Ok(summary) => {
                 eprintln!("{summary}");
                 done += 1;
@@ -198,19 +208,23 @@ fn run_retro(git: &Git) -> i32 {
     0
 }
 
-/// Recent Claude Code transcripts for this repo that have no matching digest
-/// in coopera/sessions/. Digest filenames end in the 8-char session prefix, so
-/// matching is mechanical. Skipped: tiny transcripts (below substance), live
-/// sessions (fresh mtime or recent presence), and the distiller's own
-/// sessions (recognized by the fixed prompt marker — recursion guard for the
-/// offline path). Newest first, so the freshest backlog drains first.
-fn scan_undistilled(git: &Git, max: usize) -> Vec<PathBuf> {
+/// Recent transcripts for this repo that have no matching digest in
+/// coopera/sessions/ — from the Claude Code store (repo-keyed directory) and
+/// the Codex store (date-keyed, matched via the session_meta cwd). Digest
+/// filenames end in the 8-char session prefix, so matching is mechanical.
+/// Skipped: tiny transcripts (below substance), live sessions (fresh mtime
+/// or recent presence), and the distiller's own sessions (recognized by the
+/// fixed prompt marker — recursion guard for the offline path). Newest
+/// first, so the freshest backlog drains first. Each find is tagged with
+/// its hosting tool so the retro loop can pick the matching agent.
+fn scan_undistilled(git: &Git, max: usize) -> Vec<(PathBuf, &'static str)> {
     if max == 0 {
         return Vec::new();
     }
     let Some(home) = std::env::var_os("HOME") else {
         return Vec::new();
     };
+    let home = PathBuf::from(home);
     let slug: String = git
         .root
         .to_string_lossy()
@@ -223,7 +237,7 @@ fn scan_undistilled(git: &Git, max: usize) -> Vec<PathBuf> {
             }
         })
         .collect();
-    let store = PathBuf::from(home).join(".claude/projects").join(slug);
+    let store = home.join(".claude/projects").join(slug);
 
     let mut have: std::collections::HashSet<String> = std::collections::HashSet::new();
     if let Ok(entries) = std::fs::read_dir(git.root.join("coopera/sessions")) {
@@ -241,48 +255,127 @@ fn scan_undistilled(git: &Git, max: usize) -> Vec<PathBuf> {
     );
 
     let now = std::time::SystemTime::now();
-    let Ok(entries) = std::fs::read_dir(&store) else {
-        return Vec::new();
-    };
-    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
-    for path in entries.flatten().map(|e| e.path()) {
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
+    let mut candidates: Vec<(std::time::SystemTime, PathBuf, &'static str)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&store) {
+        for path in entries.flatten().map(|e| e.path()) {
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+                continue;
+            };
+            let sid8: String = stem.chars().take(8).collect();
+            if have.contains(&sid8) {
+                continue;
+            }
+            if active.contains(&coopera_core::presence::sanitize(&stem)) {
+                continue; // session still live per presence board
+            }
+            let Some(modified) = eligible_mtime(&path, now) else {
+                continue;
+            };
+            if head_snippet(&path, 64 * 1024).contains(coopera_core::distill::PROMPT_MARKER) {
+                continue; // a distiller's own session
+            }
+            candidates.push((modified, path, "claude-code"));
         }
-        let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
-            continue;
-        };
-        let sid8: String = stem.chars().take(8).collect();
-        if have.contains(&sid8) {
-            continue;
-        }
-        if active.contains(&coopera_core::presence::sanitize(&stem)) {
-            continue; // session still live per presence board
-        }
-        let Ok(meta) = path.metadata() else { continue };
-        if meta.len() < 16 * 1024 {
-            continue;
-        }
-        let Ok(modified) = meta.modified() else {
-            continue;
-        };
-        // A clock-skewed (future) mtime reads as "just written" — skip.
-        let Ok(age) = now.duration_since(modified) else {
-            continue;
-        };
-        if age > Duration::from_secs(14 * 24 * 3600) {
-            continue;
-        }
-        if age < Duration::from_secs(ACTIVE_MTIME_SECS) {
-            continue; // still being written
-        }
-        if head_snippet(&path, 64 * 1024).contains(coopera_core::distill::PROMPT_MARKER) {
-            continue; // a distiller's own session
-        }
-        candidates.push((modified, path));
     }
+    scan_codex_store(git, &home, &have, &active, now, &mut candidates);
     candidates.sort_by(|a, b| b.0.cmp(&a.0));
-    candidates.into_iter().take(max).map(|(_, p)| p).collect()
+    candidates
+        .into_iter()
+        .take(max)
+        .map(|(_, p, t)| (p, t))
+        .collect()
+}
+
+/// Size and age gates shared by both stores, from metadata alone (no bytes
+/// read). Some(mtime) when the file is big enough, old enough to not be
+/// mid-write, and young enough to still be backlog.
+fn eligible_mtime(path: &Path, now: std::time::SystemTime) -> Option<std::time::SystemTime> {
+    let meta = path.metadata().ok()?;
+    if meta.len() < MIN_TRANSCRIPT_BYTES {
+        return None;
+    }
+    let modified = meta.modified().ok()?;
+    // A clock-skewed (future) mtime reads as "just written" — skip.
+    let age = now.duration_since(modified).ok()?;
+    if age > MAX_TRANSCRIPT_AGE || age < Duration::from_secs(ACTIVE_MTIME_SECS) {
+        return None;
+    }
+    Some(modified)
+}
+
+/// Scan the Codex rollout store (`~/.codex/sessions/YYYY/MM/DD/`). Repo
+/// membership comes from the session_meta first line, so every size/age
+/// eligible file gets a head sniff; guards mirror the Claude scan. Dedup
+/// uses the same 8-char session-id prefix digest filenames end with —
+/// Codex ids are UUIDv7, so two sessions started within the same ~65s
+/// window share a prefix and the later one is skipped; accepted, such twins
+/// are parallel spawns of one task.
+fn scan_codex_store(
+    git: &Git,
+    home: &Path,
+    have: &std::collections::HashSet<String>,
+    active: &std::collections::HashSet<String>,
+    now: std::time::SystemTime,
+    candidates: &mut Vec<(std::time::SystemTime, PathBuf, &'static str)>,
+) {
+    let root_canon = git.root.canonicalize().unwrap_or_else(|_| git.root.clone());
+    let mut dirs: Vec<(PathBuf, u8)> = vec![(home.join(".codex/sessions"), 0)];
+    while let Some((dir, depth)) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                if depth < 3 {
+                    dirs.push((path, depth + 1));
+                }
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("rollout-") || !name.ends_with(".jsonl") {
+                continue;
+            }
+            let Some(modified) = eligible_mtime(&path, now) else {
+                continue;
+            };
+            let head = head_snippet(&path, CODEX_HEAD_BYTES);
+            let Some(meta) = coopera_core::distill::codex_meta(&head) else {
+                continue;
+            };
+            if meta.id.is_empty() || !cwd_in_repo(&meta.cwd, &git.root, &root_canon) {
+                continue;
+            }
+            let sid8: String = meta.id.chars().take(8).collect();
+            if have.contains(&sid8) {
+                continue;
+            }
+            if active.contains(&coopera_core::presence::sanitize(&meta.id)) {
+                continue;
+            }
+            if head.contains(coopera_core::distill::PROMPT_MARKER) {
+                continue; // a distiller's own session (codex exec)
+            }
+            candidates.push((modified, path, "codex"));
+        }
+    }
+}
+
+/// Does the session cwd live inside this repo? Component-wise prefix match
+/// on both the raw and canonicalized spellings (macOS /var ↔ /private/var);
+/// subdirectory sessions belong to the repo too.
+fn cwd_in_repo(cwd: &str, root: &Path, root_canon: &Path) -> bool {
+    if cwd.is_empty() {
+        return false;
+    }
+    let p = Path::new(cwd);
+    let canon = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    [root, root_canon]
+        .iter()
+        .any(|r| p.starts_with(r) || canon.starts_with(r))
 }
 
 /// First `bytes` of a file, lossily decoded — enough to fingerprint distiller
@@ -313,7 +406,18 @@ fn distill_one(
     let config = Config::load(&git.root);
     let raw = std::fs::read_to_string(transcript_path)
         .with_context(|| format!("cannot read transcript {}", transcript_path.display()))?;
-    let excerpt = distill::extract_transcript(&raw, &git.root);
+    // A session_meta first line marks a Codex rollout; anything else is
+    // treated as a Claude Code transcript. Format detection also corrects a
+    // mislabeled caller: a rollout is a codex session no matter what the
+    // queue said, and the tool picks both the extractor's sibling agent
+    // (decision 003) and the digest attribution.
+    let codex = distill::codex_meta(&raw);
+    let tool = if codex.is_some() { "codex" } else { tool };
+    let excerpt = if codex.is_some() {
+        distill::extract_codex_rollout(&raw, &git.root)
+    } else {
+        distill::extract_transcript(&raw, &git.root)
+    };
     if excerpt.messages < config.distill.min_messages {
         return Ok(format!(
             "coopera distill: skipped — {} message(s) below substance threshold ({})",
@@ -326,9 +430,17 @@ fn distill_one(
     let reply = run_agent(&config, tool, &prompt, &git.root)?;
     let resp = distill::parse_response(&reply)?;
 
-    // Digest — always written once past the substance threshold.
+    // Digest — always written once past the substance threshold. Codex
+    // rollout filenames don't start with the session id, so the id comes
+    // from the session_meta line there.
     let session_id = session
         .map(str::to_string)
+        .or_else(|| {
+            codex
+                .as_ref()
+                .map(|m| m.id.clone())
+                .filter(|id| !id.is_empty())
+        })
         .or_else(|| {
             transcript_path
                 .file_stem()
