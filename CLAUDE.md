@@ -36,7 +36,7 @@ echo '{}' | cargo run -p coopera-cli -- hook session-start
 - [x] F3 세션 종료 증류 — **구현 완료** (2026-07-29): 에이전트 headless 호출(설정 가능, 기본 `claude -p`, 프롬프트는 stdin)→고정 스키마 JSON 파싱→다이제스트(wiki/sessions/)→위키 초안 create/update(린트 게이트+레드액션+wiki/ 경로 탈출 차단)→스테이징(코드 PR 동승)→성공 시 retro 큐 해제. 재귀 가드 COOPERA_DISTILL. 스텁 e2e + **실 `claude -p` 검증 완료**(결정 2·학습 1·고품질 초안 생성 확인)
 - [x] F3 후속: 유사 페이지 update 우선(프롬프트 지시+update 액션), 실패 시 undistilled 마커·`--retro`로 소급 처리
 - [x] F4 위키 린트: 스키마 검증, 위반 시 비0 종료 — 스모크 테스트 통과
-- [x] stale 페이지 주입 제외 — **구현 완료** (2026-07-29): 기준은 페이지 자신의 마지막 커밋(코드 PR 동승 머지 = 재검증; last_verified는 미커밋 페이지의 폴백·증빙용). 그 이후 커밋에서 anchors 매칭 파일이 바뀌면 stale → 요약 주입 제외 + 포인터 1줄("re-verify before relying") + systemMessage에 "N stale excluded". 미커밋 변경은 in-flight로 간주(staleness 아님). fail-open(알 수 없는 sha는 fresh)
+- [x] stale 페이지 주입 제외 — **구현 완료** (2026-07-29): 기준은 페이지 자신의 마지막 커밋(코드 PR 동승 머지 = 재검증; last_verified는 미커밋 페이지의 폴백·증빙용). 그 이후 커밋에서 anchors 매칭 파일이 바뀌면 stale → 요약 주입 제외 + 포인터 1줄("re-verify before relying") + systemMessage에 "N stale excluded". 미커밋 변경은 in-flight로 간주(staleness 아님). fail-open(알 수 없는 sha는 fresh) — *이후 하드닝 P2에서 "제외" 대신 "[STALE — re-verify] 마커 요약 주입"으로 대체*
 
 ### 구현 중 검증 항목 (PRD 미해결)
 
@@ -52,6 +52,15 @@ echo '{}' | cargo run -p coopera-cli -- hook session-start
 - [x] F8 Codex 어댑터: init이 `.codex/config.toml` `[[hooks.*]]` 3종 생성(`COOPERA_TOOL=codex`) — **크로스툴 데모 통과**: Codex가 주입된 팀 결정(git refs presence)과 안티-서베일런스 원칙대로 계획 수립, 서버 제안 0. 전제: 프로젝트 trust + `/hooks` 훅 승인 1회
 - [x] F9 Antigravity 읽기 경로: AGENTS.md hook-less 지침(presence.md·INDEX 읽기) + `--retro` 확장(트랜스크립트 저장소 스캔 — 다이제스트 없는 최근 세션 최대 3건, 16KB 문턱)
 - 라이브 검증 보너스: M2 작업 중 병렬 실세션이 종료되며 **자동 증류가 무인으로 작동** — 결정 4페이지(003~006) 스테이징됨
+
+## 신뢰성 하드닝 P0~P2 — 완료 2026-08-02
+
+진단 배경: 2026-07-29 이후 자동 증류 성공 0건. 원인 3중주 — ① SessionEnd의 백그라운드 distiller가 훅 프로세스 그룹 정리에 사살됨(수동 실행은 102초 성공), ② 실패가 완전 무음(stderr → /dev/null, 로그·카운터 없음), ③ 안전망 `--retro`를 아무도 자동 호출하지 않음. 부가로 Codex presence 키가 훅마다 달라져 죽은 ref가 원격에 영구 잔류, stale 과잉 제외로 주입팩 빈곤화.
+
+- [x] P0 증류 소생: spawn을 자기 프로세스 그룹으로 detach(`spawn::detach`), distiller 출력 `.coopera/cache/distill.log`(512KB 캡), session-start에 "N undistilled pending" 표시, session-start가 `distill --retro` 자동 드레인(락파일 가드·stale 30분 해제·회당 에이전트 호출 최대 3건), 타임아웃 180→600s, retro 스캔 하드닝(mtime 최신순, 활성 세션 제외 = mtime 10분/presence 30분, distiller 트랜스크립트 PROMPT_MARKER 스니핑 제외)
+- [x] P1 Codex/presence: 훅 명령에 `COOPERA_SESSION_FALLBACK="ppid-$PPID"` — 세션 키가 훅 간 안정화되어 intent 갱신·SessionEnd 정리 작동(e2e 통과; **실 Codex 세션에서 $PPID 안정성 실측은 대기**), last_seen 24h 초과 ref lazy GC(로컬 즉시 + 원격은 백그라운드 push 1회, 파싱 불가 ref는 보존)
+- [x] P2 주입/계측: stale 페이지는 제외 대신 [STALE — re-verify] 마커로 요약 주입(fresh 이후 순위, 예산 초과분만 포인터), `.coopera/cache/metrics.jsonl` 계측(inject/distill/distill_error, 1MB 로테이션, 로컬 전용 — M3 백로그 선행)
+- [ ] 후속: Codex 롤아웃(`~/.codex/sessions/…/rollout-*.jsonl`, session_meta/payload 스키마 실측 완료) 증류 경로 — 별도 추출기 필요. touched 목록의 리포 밖 절대경로 필터링(M1 이월)
 
 ## 컨벤션
 
