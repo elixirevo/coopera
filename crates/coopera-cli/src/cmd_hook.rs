@@ -106,6 +106,10 @@ pub fn session_start() -> i32 {
                 status: "active".to_string(),
             };
             let _ = presence::publish(&git, &entry, true, NET_TIMEOUT);
+            // Lazy GC: sweep refs of long-dead sessions (crashes, kills) —
+            // remote deletion rides a detached background push. Runs after
+            // our own publish so this session's fresh ref is never a target.
+            let _ = presence::gc(&git, now, None);
 
             // F7: pushed branches are the primary work signal (push axis).
             let entries = presence::load_all(&git);

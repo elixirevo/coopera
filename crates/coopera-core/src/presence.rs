@@ -112,6 +112,44 @@ pub fn fetch(git: &Git, timeout: Duration) -> bool {
     .is_ok()
 }
 
+/// Lazy GC — makes the "refs are cleaned lazily" contract real: crashed
+/// sessions age out of *display* after MAX_AGE_SECS, but their refs used to
+/// linger on the remote forever. Whoever starts a session next sweeps them:
+/// local deletion immediately, remote deletion in one push (detached
+/// background when `sync_timeout` is None, so SessionStart latency is
+/// untouched). Conservative: only entries that parse AND are verifiably old
+/// are swept — unreadable refs are left alone (could be a newer format).
+pub fn gc(git: &Git, now: jiff::Timestamp, sync_timeout: Option<Duration>) -> usize {
+    let mut dead: Vec<String> = Vec::new();
+    for r in git.list_refs(REF_PREFIX) {
+        let expired = git
+            .read_ref_file(&r, FILE_NAME)
+            .ok()
+            .and_then(|y| serde_yaml::from_str::<PresenceEntry>(&y).ok())
+            .and_then(|e| age_secs(&now, &e.last_seen))
+            .map(|age| age > MAX_AGE_SECS)
+            .unwrap_or(false);
+        if expired {
+            dead.push(r);
+        }
+    }
+    for r in &dead {
+        git.delete_ref(r);
+    }
+    if !dead.is_empty() && git.has_origin() {
+        let mut args: Vec<String> = vec!["push".to_string(), "origin".to_string()];
+        args.extend(dead.iter().map(|r| format!(":{r}")));
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        match sync_timeout {
+            Some(t) => {
+                let _ = git.run_network(&arg_refs, t);
+            }
+            None => git.spawn_network(&arg_refs),
+        }
+    }
+    dead.len()
+}
+
 /// Remove a session's ref locally and remotely (session cleanup).
 pub fn remove(git: &Git, user: &str, session: &str, timeout: Duration) {
     let refname = ref_name(user, session);
@@ -295,6 +333,61 @@ mod tests {
         remove(&git_a, "alice", "sess-aaaa", Duration::from_secs(5));
         assert!(fetch(&git_b, Duration::from_secs(5)));
         assert!(load_all(&git_b).is_empty(), "pruned after remote delete");
+    }
+
+    #[test]
+    fn gc_sweeps_aged_refs_locally_and_remotely() {
+        let origin = tempfile::tempdir().unwrap();
+        sh_git(origin.path(), &["init", "-q", "--bare"]);
+        let a = tempfile::tempdir().unwrap();
+        sh_git(a.path(), &["init", "-q"]);
+        sh_git(
+            a.path(),
+            &["remote", "add", "origin", origin.path().to_str().unwrap()],
+        );
+        let git = Git::discover(a.path()).unwrap();
+
+        let now = jiff::Timestamp::now();
+        let fresh = now.to_string();
+        let old = now
+            .checked_sub(jiff::Span::new().hours(25))
+            .unwrap()
+            .to_string();
+        publish(
+            &git,
+            &entry("alice", "sess-live", "working", &fresh),
+            true,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        publish(
+            &git,
+            &entry("bob", "sess-crashed", "gone", &old),
+            true,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+
+        let swept = gc(&git, now, Some(Duration::from_secs(5)));
+        assert_eq!(swept, 1);
+        let local = git.list_refs(REF_PREFIX);
+        assert_eq!(local.len(), 1, "{local:?}");
+        assert!(local[0].contains("sess-live"), "{local:?}");
+
+        let out = std::process::Command::new("git")
+            .args([
+                "ls-remote",
+                origin.path().to_str().unwrap(),
+                "refs/coopera/presence/*",
+            ])
+            .output()
+            .unwrap();
+        let remote = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(remote.contains("sess-live"), "{remote}");
+        assert!(
+            !remote.contains("sess-crashed"),
+            "aged ref must be deleted on origin too: {remote}"
+        );
     }
 
     #[test]
