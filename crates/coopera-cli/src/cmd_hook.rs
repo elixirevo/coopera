@@ -258,13 +258,13 @@ pub fn session_end() -> i32 {
             if let Some(session) = &input.session_id {
                 cmd.arg("--session").arg(session);
             }
-            // Detached spawn: we intentionally do not wait.
-            let _ = cmd
-                .current_dir(&git.root)
+            // Detached spawn (own process group): we intentionally do not
+            // wait, and hook teardown must not be able to kill it mid-run.
+            cmd.current_dir(&git.root)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
+                .stderr(std::process::Stdio::null());
+            let _ = coopera_core::spawn::detach(&mut cmd).spawn();
         }
     }
     0

@@ -168,16 +168,17 @@ impl Git {
         }
     }
 
-    /// Fire-and-forget network command (background push) — never blocks.
+    /// Fire-and-forget network command (background push) — never blocks, and
+    /// detaches so hook-teardown group kills cannot reap the push mid-flight.
     pub fn spawn_network(&self, args: &[&str]) {
-        let _ = Command::new("git")
-            .arg("-C")
+        let mut cmd = Command::new("git");
+        cmd.arg("-C")
             .arg(&self.root)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
+            .stderr(Stdio::null());
+        let _ = crate::spawn::detach(&mut cmd).spawn();
     }
 
     /// True if the repo has a remote named origin.

@@ -13,5 +13,6 @@ pub mod hookio;
 pub mod inject;
 pub mod presence;
 pub mod redact;
+pub mod spawn;
 pub mod staleness;
 pub mod wiki;
