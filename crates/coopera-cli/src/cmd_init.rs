@@ -26,11 +26,19 @@ wiki = 800\n\
 instructions = 200\n\
 \n\
 # [distill]\n\
-# Session distillation runs your own agent headlessly (prompt on stdin).\n\
+# Session distillation runs the hosting tool's own agent headlessly\n\
+# (claude-code -> claude -p, codex -> codex exec; falls back to whichever\n\
+# is installed). Uncomment to override for every tool:\n\
 # command = \"claude\"\n\
 # args = [\"-p\"]                # cheaper/faster: [\"-p\", \"--model\", \"claude-haiku-4-5\"]\n\
 # timeout_secs = 600\n\
-# min_messages = 3             # sessions with fewer messages are skipped\n";
+# min_messages = 3             # sessions with fewer messages are skipped\n\
+#\n\
+# Per-tool override (beats the global one; COOPERA_OUT becomes a temp file\n\
+# the agent's final reply is read from):\n\
+# [distill.agents.codex]\n\
+# command = \"codex\"\n\
+# args = [\"exec\", \"--ephemeral\", \"-s\", \"read-only\", \"-o\", \"COOPERA_OUT\", \"-\"]\n";
 
 const INDEX_TEMPLATE: &str = "\
 # Wiki index\n\n\
@@ -188,14 +196,7 @@ fn guarded_command(tool: &str, sub: &str) -> String {
 /// (we never bake a path into committed files, so the user must either install
 /// on PATH or export COOPERA_BIN).
 fn on_path() -> bool {
-    let name = if cfg!(windows) {
-        "coopera.exe"
-    } else {
-        "coopera"
-    };
-    std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()))
-        .unwrap_or(false)
+    coopera_core::spawn::find_on_path("coopera")
 }
 
 /// Merge coopera hooks into .claude/settings.json, preserving everything

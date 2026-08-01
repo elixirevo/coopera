@@ -24,6 +24,17 @@ pub fn detach(cmd: &mut Command) -> &mut Command {
     cmd
 }
 
+/// Is `name` an executable on PATH? (Windows also tries `<name>.exe`.)
+/// Mirrors what the guarded hook command's `command -v` will conclude.
+pub fn find_on_path(name: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|d| {
+        d.join(name).is_file() || (cfg!(windows) && d.join(format!("{name}.exe")).is_file())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -35,5 +46,11 @@ mod tests {
         cmd.args(["-c", "exit 7"]);
         let status = detach(&mut cmd).status().unwrap();
         assert_eq!(status.code(), Some(7));
+    }
+
+    #[test]
+    fn find_on_path_sees_git_but_not_nonsense() {
+        assert!(find_on_path("git"), "git must be on PATH for these tests");
+        assert!(!find_on_path("definitely-not-a-real-binary-name"));
     }
 }

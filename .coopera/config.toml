@@ -7,8 +7,16 @@ wiki = 800
 instructions = 200
 
 # [distill]
-# Session distillation runs your own agent headlessly (prompt on stdin).
+# Session distillation runs the hosting tool's own agent headlessly
+# (claude-code -> claude -p, codex -> codex exec; falls back to whichever
+# is installed). Uncomment to override for every tool:
 # command = "claude"
 # args = ["-p"]                # cheaper/faster: ["-p", "--model", "claude-haiku-4-5"]
 # timeout_secs = 600
 # min_messages = 3             # sessions with fewer messages are skipped
+#
+# Per-tool override (beats the global one; COOPERA_OUT becomes a temp file
+# the agent's final reply is read from):
+# [distill.agents.codex]
+# command = "codex"
+# args = ["exec", "--ephemeral", "-s", "read-only", "-o", "COOPERA_OUT", "-"]
