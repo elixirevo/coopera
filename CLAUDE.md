@@ -9,6 +9,7 @@ AI 코딩 도구(Claude Code·Codex·Antigravity)에 설치하는 팀 컨텍스�
 - 기획서: [docs/project/02-plan.md](docs/project/02-plan.md)
 - PRD: [docs/project/03-prd.md](docs/project/03-prd.md) — 기능·수용 기준의 원천
 - 스캐폴드 리포트: [docs/project/04-scaffold-report.md](docs/project/04-scaffold-report.md)
+- **사용 가이드**: [docs/usage.md](docs/usage.md) — 도구별 사용 프로세스·범례·문제 해결
 
 ## 스택
 

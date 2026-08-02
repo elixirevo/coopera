@@ -8,7 +8,12 @@ from the same shared understanding of the project. No server: git is the only
 data source. It is installed into your existing tools via hooks; you never run
 it manually.
 
-Status: pre-release, M1 in progress (internal dogfooding).
+Status: pre-release, self-hosting daily. All three tools have the full loop —
+injection, presence, and capture with per-tool distillation (Claude Code and
+Codex via session hooks + transcript stores; Antigravity via `.agents/hooks.json`
+PreInvocation/Stop).
+
+Usage guide (Korean): [docs/usage.md](docs/usage.md)
 
 ## Install (no Rust required)
 
