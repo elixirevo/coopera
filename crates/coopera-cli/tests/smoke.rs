@@ -1065,6 +1065,62 @@ fn fallback_session_key_covers_full_lifecycle() {
     assert!(!exists, "session-end must clean up the fallback-key ref");
 }
 
+/// Retention — the retro sweep moves old committed digests into the
+/// git-native archive ref and stages the deletion; fresh digests and
+/// digests cited by unreviewed pages stay in the tree.
+#[test]
+fn retro_sweep_archives_old_digests() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q"]);
+    git(dir, &["config", "user.email", "tester@example.com"]);
+    git(dir, &["config", "user.name", "Tester"]);
+    let (_, stderr, ok) = run_in(dir, &["init"], None);
+    assert!(ok, "init failed: {stderr}");
+
+    let today = jiff::Zoned::now().date().strftime("%Y%m%d").to_string();
+    std::fs::write(
+        dir.join("coopera/sessions/20250101-000000-oldsess1.md"),
+        "old digest",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join(format!("coopera/sessions/{today}-120000-freshsss.md")),
+        "fresh digest",
+    )
+    .unwrap();
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-qm", "seed"]);
+
+    let (_, stderr, ok) = run_in(dir, &["distill", "--retro"], None);
+    assert!(ok, "retro failed: {stderr}");
+    assert!(
+        stderr.contains("coopera archive: 1 digest(s)"),
+        "sweep must announce itself: {stderr}"
+    );
+    assert!(!dir
+        .join("coopera/sessions/20250101-000000-oldsess1.md")
+        .exists());
+    assert!(dir
+        .join(format!("coopera/sessions/{today}-120000-freshsss.md"))
+        .exists());
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "cat-file",
+            "-p",
+            "refs/coopera/archive/sessions:20250101-000000-oldsess1.md",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "old digest",
+        "archived content must be retrievable from the ref"
+    );
+}
+
 /// M2 — presence across two clones through a bare origin: publish at
 /// SessionStart, cross-visibility, intent refresh + trigger injection at
 /// UserPromptSubmit, cleanup at SessionEnd (F5/F6/F7 e2e).

@@ -135,6 +135,20 @@ touched: crates/coopera-core/src/presence.rs, ...
   coopera wiki lint
   ```
 
+### 다이제스트 보존 (자동)
+
+`coopera/sessions/`의 다이제스트는 기본 **90일**이 지나면 자동으로 git-native 아카이브
+ref(`refs/coopera/archive/sessions`)로 옮겨지고, 워킹 트리에서의 삭제는 스테이징되어
+다음 커밋에 동승한다(위키와 같은 리뷰 흐름). 미리뷰(draft) 페이지가 `source:`로 참조
+중인 다이제스트는 리뷰가 끝날 때까지 트리에 남는다. 아카이브된 원문은 언제든:
+
+```bash
+git cat-file -p refs/coopera/archive/sessions:20260802-000534-019fab6b.md
+```
+
+(모든 다이제스트는 main 히스토리에도 영구히 남아 있다 — ref는 한곳에서 훑기 위한
+스냅샷 색인이다.) 끄려면 `.coopera/config.toml`에 `[sessions] retention_days = 0`.
+
 ## 6. 확인과 문제 해결
 
 정상 작동의 신호는 **세션 시작의 한 줄 메시지**다. 그 외 점검 도구:

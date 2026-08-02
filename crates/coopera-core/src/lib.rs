@@ -5,6 +5,7 @@
 //! hook I/O types, digest schema, and redaction. The CLI crate is a thin
 //! command layer over this library.
 
+pub mod archive;
 pub mod config;
 pub mod digest;
 pub mod distill;

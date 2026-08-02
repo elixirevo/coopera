@@ -20,3 +20,8 @@ instructions = 200
 # [distill.agents.codex]
 # command = "codex"
 # args = ["exec", "--ephemeral", "-s", "read-only", "-o", "COOPERA_OUT", "-"]
+
+# [sessions]
+# Old digests move from coopera/sessions/ to the git-native archive ref
+# (refs/coopera/archive/sessions); retrieve with git cat-file. 0 disables.
+# retention_days = 90

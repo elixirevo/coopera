@@ -210,6 +210,24 @@ fn run_retro(git: &Git) -> i32 {
         lock.touch();
     }
 
+    // Retention rides the same background sweep: old digests move to the
+    // git-native archive ref, deletions stage for the next code commit.
+    let config = Config::load(&git.root);
+    let (pages, _) = wiki::load_wiki(&git.root);
+    let swept = coopera_core::archive::sweep(git, &pages, config.sessions.retention_days);
+    if !swept.archived.is_empty() {
+        coopera_core::metrics::record(
+            &git.root,
+            "archive",
+            &[("digests", (swept.archived.len() as u64).into())],
+        );
+        eprintln!(
+            "coopera archive: {} digest(s) → {}",
+            swept.archived.len(),
+            coopera_core::archive::ARCHIVE_REF
+        );
+    }
+
     if seen == 0 {
         eprintln!(
             "[{}] coopera distill --retro: nothing to do",

@@ -169,11 +169,27 @@ impl Config {
     }
 }
 
+/// Session-digest retention (the hybrid storage tier).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Sessions {
+    /// Digests older than this move from the working tree to the
+    /// git-native archive ref. 0 disables archiving entirely.
+    pub retention_days: u32,
+}
+
+impl Default for Sessions {
+    fn default() -> Self {
+        Self { retention_days: 90 }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub budget: Budget,
     pub distill: Distill,
+    pub sessions: Sessions,
 }
 
 impl Config {

@@ -228,6 +228,83 @@ impl Git {
         self.run(&["cat-file", "-p", &format!("{refname}:{file_name}")])
     }
 
+    /// Commit sha a ref resolves to; None when the ref does not exist.
+    pub fn ref_sha(&self, refname: &str) -> Option<String> {
+        self.run(&[
+            "rev-parse",
+            "--verify",
+            "-q",
+            &format!("{refname}^{{commit}}"),
+        ])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    }
+
+    /// Flat (name, blob sha) entries of the tree a ref points at. Empty when
+    /// the ref is missing — archive trees start from nothing.
+    pub fn ls_tree(&self, refname: &str) -> Vec<(String, String)> {
+        let Ok(out) = self.run(&["ls-tree", refname]) else {
+            return Vec::new();
+        };
+        out.lines()
+            .filter_map(|l| {
+                // Format: "100644 blob <sha>\t<name>"
+                let (meta, name) = l.split_once('\t')?;
+                let sha = meta.split_whitespace().nth(2)?;
+                Some((name.to_string(), sha.to_string()))
+            })
+            .collect()
+    }
+
+    /// Write `content` as a blob; returns its sha.
+    pub fn hash_object(&self, content: &str) -> Result<String> {
+        Ok(self
+            .run_with_stdin(&["hash-object", "-w", "--stdin"], content)?
+            .trim()
+            .to_string())
+    }
+
+    /// Build a flat tree from (name, blob sha) entries; returns the tree sha.
+    pub fn mktree(&self, entries: &[(String, String)]) -> Result<String> {
+        let listing: String = entries
+            .iter()
+            .map(|(name, sha)| format!("100644 blob {sha}\t{name}\n"))
+            .collect();
+        Ok(self
+            .run_with_stdin(&["mktree"], &listing)?
+            .trim()
+            .to_string())
+    }
+
+    /// Commit `tree` (optionally chained to `parent`) with the same pinned
+    /// plumbing identity used for presence refs, and point `refname` at it.
+    pub fn commit_tree_to_ref(
+        &self,
+        refname: &str,
+        tree: &str,
+        parent: Option<&str>,
+        message: &str,
+    ) -> Result<()> {
+        let mut args: Vec<&str> = vec![
+            "-c",
+            "user.name=coopera",
+            "-c",
+            "user.email=presence@coopera.local",
+            "commit-tree",
+            tree,
+            "-m",
+            message,
+        ];
+        if let Some(p) = parent {
+            args.push("-p");
+            args.push(p);
+        }
+        let commit = self.run(&args)?.trim().to_string();
+        self.run(&["update-ref", refname, &commit])?;
+        Ok(())
+    }
+
     /// List refs matching `pattern` (full ref names).
     pub fn list_refs(&self, pattern: &str) -> Vec<String> {
         self.run(&["for-each-ref", "--format=%(refname)", pattern])

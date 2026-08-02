@@ -38,7 +38,12 @@ instructions = 200\n\
 # the agent's final reply is read from):\n\
 # [distill.agents.codex]\n\
 # command = \"codex\"\n\
-# args = [\"exec\", \"--ephemeral\", \"-s\", \"read-only\", \"-o\", \"COOPERA_OUT\", \"-\"]\n";
+# args = [\"exec\", \"--ephemeral\", \"-s\", \"read-only\", \"-o\", \"COOPERA_OUT\", \"-\"]\n\
+\n\
+# [sessions]\n\
+# Old digests move from coopera/sessions/ to the git-native archive ref\n\
+# (refs/coopera/archive/sessions); retrieve with git cat-file. 0 disables.\n\
+# retention_days = 90\n";
 
 const INDEX_TEMPLATE: &str = "\
 # Wiki index\n\n\
