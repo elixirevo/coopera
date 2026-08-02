@@ -1,12 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 /// Session digest — the fixed schema (≤30 rendered lines) that distillation
-/// must produce. Fixed shape is the quality equalizer across different
-/// developers' models (01-idea-brief, implementation decision 1).
-///
-/// TODO(F3): the distiller (`coopera distill`) must fill this by invoking the
-/// user's own agent headlessly (`claude -p` / `codex exec`), then render it to
-/// wiki/sessions/ and stage any wiki diff onto the working branch.
+/// produces. Fixed shape is the quality equalizer across different
+/// developers' models (01-idea-brief, implementation decision 1). Filled by
+/// `coopera distill` from the hosting tool's own headless agent, rendered to
+/// coopera/sessions/, and staged onto the working branch with any wiki diff.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Digest {
     pub session: String,
